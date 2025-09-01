@@ -1,0 +1,91 @@
+CREATE TABLE veiculos (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    placa VARCHAR(20) NOT NULL,
+    tipo VARCHAR(100) NOT NULL,
+    modelo VARCHAR(100) NOT NULL,
+    chassi VARCHAR(17) NOT NULL,
+    renavam VARCHAR(11) NOT NULL,
+    ano YEAR NOT NULL,
+    regime VARCHAR(20) NOT NULL,
+    tipo_equipamento VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE fornecedor (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL,
+    cnpj VARCHAR(20) NOT NULL,
+    n_contato VARCHAR(20) NOT NULL,
+    n_contato2 VARCHAR(20),
+    coordenadas VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE pecas (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL
+);
+
+CREATE TABLE peca_fornecedor (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    id_peca INT NOT NULL,
+    id_fornecedor INT NOT NULL,
+    preco DECIMAL(10, 2) NOT NULL,
+    FOREIGN KEY (id_peca) REFERENCES pecas(id),
+    FOREIGN KEY (id_fornecedor) REFERENCES fornecedor(id)
+);
+
+CREATE TABLE manutencao (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    peca_usada_id INT NOT NULL,
+    veiculo_usado INT NOT NULL,
+    tipo_manutencao VARCHAR(100) NOT NULL,
+    data_manutencao_inicio DATE NOT NULL,
+    data_manutencao_fim DATE NOT NULL,
+    descricao VARCHAR(100) NOT NULL,
+    FOREIGN KEY (veiculo_usado) REFERENCES veiculos(id),
+    FOREIGN KEY (peca_usada_id) REFERENCES pecas(id),
+	quantidade_peca_usada INT NOT NULL
+);
+
+CREATE TABLE compra (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+    id_peca INT NOT NULL,
+    id_fornecedor INT NOT NULL,
+    data_compra DATE NOT NULL,
+    quantidade INT NOT NULL,
+    valor_unitario DECIMAL(10, 2) NOT NULL,
+    valor_total DECIMAL(10, 2) GENERATED ALWAYS AS (quantidade * valor_unitario),
+    FOREIGN KEY (id_peca) REFERENCES pecas(id),
+    FOREIGN KEY (id_fornecedor) REFERENCES fornecedor(id)
+);
+
+CREATE TABLE estoque (
+	id INT AUTO_INCREMENT PRIMARY KEY,
+	id_peca INT NOT NULL,
+    quantidade INT NOT NULL DEFAULT 0,
+    FOREIGN KEY (id_peca) REFERENCES pecas(id),
+    UNIQUE (id_peca)
+);
+
+ALTER TABLE manutencao ADD COLUMN veiculo_usado_tmp INT;
+
+SET SQL_SAFE_UPDATES = 0;
+
+UPDATE manutencao m
+JOIN veiculos v ON m.veiculo_usado = v.placa
+SET m.veiculo_usado_tmp = v.id;
+
+SET SQL_SAFE_UPDATES = 1;
+
+SELECT id, veiculo_usado, veiculo_usado_tmp
+FROM manutencao;
+
+ALTER TABLE manutencao DROP COLUMN veiculo_usado;
+
+ALTER TABLE manutencao CHANGE veiculo_usado_tmp veiculo_usado INT NOT NULL;
+
+ALTER TABLE manutencao
+ADD CONSTRAINT fk_manutencao_veiculo FOREIGN KEY (veiculo_usado) REFERENCES veiculos(id);
+
+ALTER TABLE fornecedor
+    MODIFY COLUMN n_contato VARCHAR(20) NOT NULL,
+    MODIFY COLUMN n_contato2 VARCHAR(20);
