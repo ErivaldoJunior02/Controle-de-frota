@@ -1,91 +1,142 @@
-CREATE TABLE veiculos (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-    placa VARCHAR(20) NOT NULL,
-    tipo VARCHAR(100) NOT NULL,
-    modelo VARCHAR(100) NOT NULL,
-    chassi VARCHAR(17) NOT NULL,
-    renavam VARCHAR(11) NOT NULL,
-    ano YEAR NOT NULL,
-    regime VARCHAR(20) NOT NULL,
-    tipo_equipamento VARCHAR(100) NOT NULL
+CREATE TABLE usuarios (
+	id_usuario INT AUTO_INCREMENT PRIMARY KEY,
+	nome VARCHAR(255) NOT NULL,
+	email VARCHAR(255) UNIQUE,
+	senha_hash VARCHAR(255),
+	perfil ENUM('admin','mecanico','gestor') DEFAULT 'gestor',
+	status ENUM('ativo','inativo') DEFAULT 'ativo'
 );
 
-CREATE TABLE fornecedor (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL,
-    cnpj VARCHAR(20) NOT NULL,
-    n_contato VARCHAR(20) NOT NULL,
-    n_contato2 VARCHAR(20),
-    coordenadas VARCHAR(100) NOT NULL
+
+CREATE TABLE fornecedores (
+	id_fornecedor INT AUTO_INCREMENT PRIMARY KEY,
+	nome VARCHAR(255) NOT NULL,
+	cnpj_cpf VARCHAR(50),
+	endereco VARCHAR(255),
+	telefone VARCHAR(50),
+	email VARCHAR(100),
+	observacoes TEXT
 );
+
+
+CREATE TABLE equipamentos (
+	id_equipamento INT AUTO_INCREMENT PRIMARY KEY,
+	placa VARCHAR(50),
+	descricao VARCHAR(255) NOT NULL,
+	modelo VARCHAR(100),
+	ano INT,
+	chassi VARCHAR(100),
+	status ENUM('ativo','em_manutencao','inativo') DEFAULT 'ativo'
+);
+
 
 CREATE TABLE pecas (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-    nome VARCHAR(100) NOT NULL
+	id_peca INT AUTO_INCREMENT PRIMARY KEY,
+	nome VARCHAR(255) NOT NULL,
+	descricao TEXT,
+	codigo_interno VARCHAR(100),
+	unidade_medida VARCHAR(20) DEFAULT 'un'
 );
 
-CREATE TABLE peca_fornecedor (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-    id_peca INT NOT NULL,
-    id_fornecedor INT NOT NULL,
-    preco DECIMAL(10, 2) NOT NULL,
-    FOREIGN KEY (id_peca) REFERENCES pecas(id),
-    FOREIGN KEY (id_fornecedor) REFERENCES fornecedor(id)
-);
-
-CREATE TABLE manutencao (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-    peca_usada_id INT NOT NULL,
-    veiculo_usado INT NOT NULL,
-    tipo_manutencao VARCHAR(100) NOT NULL,
-    data_manutencao_inicio DATE NOT NULL,
-    data_manutencao_fim DATE NOT NULL,
-    descricao VARCHAR(100) NOT NULL,
-    FOREIGN KEY (veiculo_usado) REFERENCES veiculos(id),
-    FOREIGN KEY (peca_usada_id) REFERENCES pecas(id),
-	quantidade_peca_usada INT NOT NULL
-);
-
-CREATE TABLE compra (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-    id_peca INT NOT NULL,
-    id_fornecedor INT NOT NULL,
-    data_compra DATE NOT NULL,
-    quantidade INT NOT NULL,
-    valor_unitario DECIMAL(10, 2) NOT NULL,
-    valor_total DECIMAL(10, 2) GENERATED ALWAYS AS (quantidade * valor_unitario),
-    FOREIGN KEY (id_peca) REFERENCES pecas(id),
-    FOREIGN KEY (id_fornecedor) REFERENCES fornecedor(id)
+CREATE TABLE pecas_fornecedores (
+	id_peca_fornecedor INT AUTO_INCREMENT PRIMARY KEY,
+	id_peca INT NOT NULL,
+	id_fornecedor INT NOT NULL,
+	preco_unitario DECIMAL(15,4) NOT NULL,
+	data_cotacao DATE NOT NULL,
+	FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE CASCADE,
+	FOREIGN KEY (id_fornecedor) REFERENCES fornecedores(id_fornecedor) ON DELETE CASCADE
 );
 
 CREATE TABLE estoque (
-	id INT AUTO_INCREMENT PRIMARY KEY,
-	id_peca INT NOT NULL,
-    quantidade INT NOT NULL DEFAULT 0,
-    FOREIGN KEY (id_peca) REFERENCES pecas(id),
-    UNIQUE (id_peca)
+	id_estoque INT AUTO_INCREMENT PRIMARY KEY,
+	id_peca INT NOT NULL UNIQUE,
+	quantidade_atual DECIMAL(20,4) NOT NULL DEFAULT 0,
+	quantidade_minima DECIMAL(20,4) NOT NULL DEFAULT 0,
+	FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE CASCADE
 );
 
-ALTER TABLE manutencao ADD COLUMN veiculo_usado_tmp INT;
+CREATE TABLE compras (
+	id_compra INT AUTO_INCREMENT PRIMARY KEY,
+	id_fornecedor INT NOT NULL,
+	data_compra DATE NOT NULL,
+	valor_total DECIMAL(18,4) NOT NULL DEFAULT 0,
+	FOREIGN KEY (id_fornecedor) REFERENCES fornecedores(id_fornecedor) ON DELETE RESTRICT
+);
 
-SET SQL_SAFE_UPDATES = 0;
+CREATE TABLE compras_itens (
+	id_item INT AUTO_INCREMENT PRIMARY KEY,
+	id_compra INT NOT NULL,
+	id_peca INT NOT NULL,
+	quantidade DECIMAL(20,4) NOT NULL,
+	preco_unitario DECIMAL(18,4) NOT NULL,
+	FOREIGN KEY (id_compra) REFERENCES compras(id_compra) ON DELETE CASCADE,
+	FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT
+);
 
-UPDATE manutencao m
-JOIN veiculos v ON m.veiculo_usado = v.placa
-SET m.veiculo_usado_tmp = v.id;
+CREATE TABLE manutencoes (
+	id_manutencao INT AUTO_INCREMENT PRIMARY KEY,
+	id_equipamento INT NOT NULL,
+	data_inicio DATE NOT NULL,
+	data_fim DATE,
+	tipo ENUM('preventiva','corretiva','revisao','outro') DEFAULT 'outro',
+	descricao_servico TEXT,
+	custo_total DECIMAL(18,4) NOT NULL DEFAULT 0,
+	responsavel INT,
+	FOREIGN KEY (id_equipamento) REFERENCES equipamentos(id_equipamento) ON DELETE RESTRICT,
+	FOREIGN KEY (responsavel) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
+);
 
-SET SQL_SAFE_UPDATES = 1;
+CREATE TABLE manutencoes_pecas (
+	id_item_manutencao INT AUTO_INCREMENT PRIMARY KEY,
+	id_manutencao INT NOT NULL,
+	id_peca INT NOT NULL,
+	quantidade_usada DECIMAL(20,4) NOT NULL,
+	preco_unitario DECIMAL(18,4) NOT NULL,
+	FOREIGN KEY (id_manutencao) REFERENCES manutencoes(id_manutencao) ON DELETE CASCADE,
+	FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT
+);
 
-SELECT id, veiculo_usado, veiculo_usado_tmp
-FROM manutencao;
+CREATE TABLE estoque_movimentacoes (
+	id_movimentacao INT AUTO_INCREMENT PRIMARY KEY,
+	id_peca INT NOT NULL,
+	tipo ENUM('entrada','saida','ajuste') NOT NULL,
+	quantidade DECIMAL(20,4) NOT NULL,
+	data_movimentacao DATETIME NOT NULL,
+	origem VARCHAR(100),
+	id_referencia INT,
+	observacao TEXT,
+	FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT
+);
 
-ALTER TABLE manutencao DROP COLUMN veiculo_usado;
+CREATE TABLE importacoes (
+	id_importacao INT AUTO_INCREMENT PRIMARY KEY,
+	arquivo_nome VARCHAR(255) NOT NULL,
+	arquivo_hash VARCHAR(255),
+	tipo_importacao VARCHAR(50) NOT NULL,
+	data_importacao DATETIME NOT NULL,
+	usuario_responsavel INT,
+	status ENUM('sucesso','parcial','erro') NOT NULL,
+	mensagem_log TEXT,
+	FOREIGN KEY (usuario_responsavel) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
+);
 
-ALTER TABLE manutencao CHANGE veiculo_usado_tmp veiculo_usado INT NOT NULL;
+CREATE TABLE orcamentos (
+	id_orcamento INT AUTO_INCREMENT PRIMARY KEY,
+	data_orcamento DATETIME NOT NULL,
+	id_usuario INT,
+	observacao TEXT,
+	FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
+);
 
-ALTER TABLE manutencao
-ADD CONSTRAINT fk_manutencao_veiculo FOREIGN KEY (veiculo_usado) REFERENCES veiculos(id);
-
-ALTER TABLE fornecedor
-    MODIFY COLUMN n_contato VARCHAR(20) NOT NULL,
-    MODIFY COLUMN n_contato2 VARCHAR(20);
+CREATE TABLE orcamentos_itens (
+	id_orcamento_item INT AUTO_INCREMENT PRIMARY KEY,
+	id_orcamento INT NOT NULL,
+	id_peca INT NOT NULL,
+	id_fornecedor INT NOT NULL,
+	quantidade DECIMAL(20,4) NOT NULL,
+	preco_unitario DECIMAL(18,4) NOT NULL,
+	FOREIGN KEY (id_orcamento) REFERENCES orcamentos(id_orcamento) ON DELETE CASCADE,
+	FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT,
+	FOREIGN KEY (id_fornecedor) REFERENCES fornecedores(id_fornecedor) ON DELETE RESTRICT
+);

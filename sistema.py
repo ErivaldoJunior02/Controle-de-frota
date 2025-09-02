@@ -1,35 +1,263 @@
-# sistema_frota_full.py
+import os
 import sys
-import pandas as pd
+import csv
+import hashlib
 from datetime import datetime, date
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-import mysql.connector
+from typing import List, Tuple
+
+try:
+    import pandas as pd
+    HAS_PANDAS = True
+except Exception:
+    HAS_PANDAS = False
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QTableWidget, QTableWidgetItem, QTabWidget,
-    QLabel, QMessageBox, QDialog, QFormLayout, QComboBox, QSpinBox, QDateEdit, QFileDialog, QHeaderView, QMenuBar, QAction
+    QLabel, QMessageBox, QDialog, QFormLayout, QComboBox, QSpinBox,
+    QDateEdit, QFileDialog, QHeaderView, QAction, QPlainTextEdit, QDoubleSpinBox
 )
 from PyQt5.QtCore import QDate, Qt
 
-# ---------- Helper: DB connection (adjust credentials) ----------
-def get_connection():
+import mysql.connector
+
+# --------------------
+# DB CONFIG - edit these to match your MySQL Workbench setup
+# --------------------
+DB_HOST = "127.0.0.1"
+DB_PORT = 3306
+DB_USER = "junior"
+DB_PASSWORD = "juninho0209"
+DB_NAME = "limpind"
+# --------------------
+
+
+def get_server_connection():
     return mysql.connector.connect(
-        host="127.0.0.1",
-        user="root",
-        password="Juninho0209@",   # <<--- coloque sua senha
-        database="sis"    # <<--- seu banco
+        host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, autocommit=False
     )
 
-# ---------- Generic dialog for Add / Edit ----------
+
+def get_connection():
+    return mysql.connector.connect(
+        host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD, database=DB_NAME, autocommit=False
+    )
+
+
+def ensure_database_and_tables():
+    # Create database if not exists, then create tables
+    server = get_server_connection()
+    cur = server.cursor()
+    cur.execute(f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;")
+    server.commit()
+    cur.close()
+    server.close()
+
+    conn = get_connection()
+    cur = conn.cursor()
+    # create tables
+    ddl_statements = [
+        """
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id_usuario INT AUTO_INCREMENT PRIMARY KEY,
+            nome VARCHAR(255) NOT NULL,
+            email VARCHAR(255) UNIQUE,
+            senha_hash VARCHAR(255),
+            perfil ENUM('admin','mecanico','gestor') DEFAULT 'gestor',
+            status ENUM('ativo','inativo') DEFAULT 'ativo'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS fornecedores (
+            id_fornecedor INT AUTO_INCREMENT PRIMARY KEY,
+            nome VARCHAR(255) NOT NULL,
+            cnpj_cpf VARCHAR(50),
+            endereco VARCHAR(255),
+            telefone VARCHAR(50),
+            email VARCHAR(100),
+            observacoes TEXT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS equipamentos (
+            id_equipamento INT AUTO_INCREMENT PRIMARY KEY,
+            placa VARCHAR(50),
+            descricao VARCHAR(255) NOT NULL,
+            modelo VARCHAR(100),
+            ano INT,
+            chassi VARCHAR(100),
+            status ENUM('ativo','em_manutencao','inativo') DEFAULT 'ativo'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pecas (
+            id_peca INT AUTO_INCREMENT PRIMARY KEY,
+            nome VARCHAR(255) NOT NULL,
+            descricao TEXT,
+            codigo_interno VARCHAR(100),
+            unidade_medida VARCHAR(20) DEFAULT 'un'
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pecas_fornecedores (
+            id_peca_fornecedor INT AUTO_INCREMENT PRIMARY KEY,
+            id_peca INT NOT NULL,
+            id_fornecedor INT NOT NULL,
+            preco_unitario DECIMAL(15,4) NOT NULL,
+            data_cotacao DATE NOT NULL,
+            FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE CASCADE,
+            FOREIGN KEY (id_fornecedor) REFERENCES fornecedores(id_fornecedor) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS estoque (
+            id_estoque INT AUTO_INCREMENT PRIMARY KEY,
+            id_peca INT NOT NULL UNIQUE,
+            quantidade_atual DECIMAL(20,4) NOT NULL DEFAULT 0,
+            quantidade_minima DECIMAL(20,4) NOT NULL DEFAULT 0,
+            FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS compras (
+            id_compra INT AUTO_INCREMENT PRIMARY KEY,
+            id_fornecedor INT NOT NULL,
+            data_compra DATE NOT NULL,
+            valor_total DECIMAL(18,4) NOT NULL DEFAULT 0,
+            FOREIGN KEY (id_fornecedor) REFERENCES fornecedores(id_fornecedor) ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS compras_itens (
+            id_item INT AUTO_INCREMENT PRIMARY KEY,
+            id_compra INT NOT NULL,
+            id_peca INT NOT NULL,
+            quantidade DECIMAL(20,4) NOT NULL,
+            preco_unitario DECIMAL(18,4) NOT NULL,
+            FOREIGN KEY (id_compra) REFERENCES compras(id_compra) ON DELETE CASCADE,
+            FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS manutencoes (
+            id_manutencao INT AUTO_INCREMENT PRIMARY KEY,
+            id_equipamento INT NOT NULL,
+            data_inicio DATE NOT NULL,
+            data_fim DATE,
+            tipo ENUM('preventiva','corretiva','revisao','outro') DEFAULT 'outro',
+            descricao_servico TEXT,
+            custo_total DECIMAL(18,4) NOT NULL DEFAULT 0,
+            responsavel INT,
+            FOREIGN KEY (id_equipamento) REFERENCES equipamentos(id_equipamento) ON DELETE RESTRICT,
+            FOREIGN KEY (responsavel) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS manutencoes_pecas (
+            id_item_manutencao INT AUTO_INCREMENT PRIMARY KEY,
+            id_manutencao INT NOT NULL,
+            id_peca INT NOT NULL,
+            quantidade_usada DECIMAL(20,4) NOT NULL,
+            preco_unitario DECIMAL(18,4) NOT NULL,
+            FOREIGN KEY (id_manutencao) REFERENCES manutencoes(id_manutencao) ON DELETE CASCADE,
+            FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS estoque_movimentacoes (
+            id_movimentacao INT AUTO_INCREMENT PRIMARY KEY,
+            id_peca INT NOT NULL,
+            tipo ENUM('entrada','saida','ajuste') NOT NULL,
+            quantidade DECIMAL(20,4) NOT NULL,
+            data_movimentacao DATETIME NOT NULL,
+            origem VARCHAR(100),
+            id_referencia INT,
+            observacao TEXT,
+            FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS importacoes (
+            id_importacao INT AUTO_INCREMENT PRIMARY KEY,
+            arquivo_nome VARCHAR(255) NOT NULL,
+            arquivo_hash VARCHAR(255),
+            tipo_importacao VARCHAR(50) NOT NULL,
+            data_importacao DATETIME NOT NULL,
+            usuario_responsavel INT,
+            status ENUM('sucesso','parcial','erro') NOT NULL,
+            mensagem_log TEXT,
+            FOREIGN KEY (usuario_responsavel) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS orcamentos (
+            id_orcamento INT AUTO_INCREMENT PRIMARY KEY,
+            data_orcamento DATETIME NOT NULL,
+            id_usuario INT,
+            observacao TEXT,
+            FOREIGN KEY (id_usuario) REFERENCES usuarios(id_usuario) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS orcamentos_itens (
+            id_orcamento_item INT AUTO_INCREMENT PRIMARY KEY,
+            id_orcamento INT NOT NULL,
+            id_peca INT NOT NULL,
+            id_fornecedor INT NOT NULL,
+            quantidade DECIMAL(20,4) NOT NULL,
+            preco_unitario DECIMAL(18,4) NOT NULL,
+            FOREIGN KEY (id_orcamento) REFERENCES orcamentos(id_orcamento) ON DELETE CASCADE,
+            FOREIGN KEY (id_peca) REFERENCES pecas(id_peca) ON DELETE RESTRICT,
+            FOREIGN KEY (id_fornecedor) REFERENCES fornecedores(id_fornecedor) ON DELETE RESTRICT
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """
+    ]
+
+    for ddl in ddl_statements:
+        cur.execute(ddl)
+    conn.commit()
+
+    # seed default admin user if not exists
+    cur.execute("SELECT COUNT(*) FROM usuarios;")
+    cnt = cur.fetchone()[0]
+    if cnt == 0:
+        cur.execute("INSERT INTO usuarios (nome, email, perfil, status) VALUES (%s,%s,%s,%s)",
+                    ("Administrador", "admin@example.com", "admin", "ativo"))
+        conn.commit()
+
+    cur.close()
+    conn.close()
+
+
+# --------------------
+# DB helpers (simple, open/close per call for reliability)
+# --------------------
+def run_select(query: str, params: Tuple = ()):
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def run_commit(query: str, params: Tuple = ()):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(query, params)
+    conn.commit()
+    last = cur.lastrowid
+    cur.close()
+    conn.close()
+    return last
+
+
+# --------------------
+# Generic small dialog for records
+# --------------------
 class RecordDialog(QDialog):
     def __init__(self, title, fields, values=None, parent=None):
-        """
-        fields: list of tuples (name, widget_type) widget_type: 'line','int','date','combo'
-        values: dict name->value for edit
-        """
         super().__init__(parent)
         self.setWindowTitle(title)
         self.layout = QFormLayout()
@@ -37,7 +265,7 @@ class RecordDialog(QDialog):
         for name, wtype, extra in fields:
             if wtype == 'line':
                 le = QLineEdit()
-                if values and name in values:
+                if values and name in values and values[name] is not None:
                     le.setText(str(values[name]))
                 self.inputs[name] = le
                 self.layout.addRow(QLabel(name.replace('_',' ').capitalize()), le)
@@ -59,15 +287,19 @@ class RecordDialog(QDialog):
                 self.layout.addRow(QLabel(name.replace('_',' ').capitalize()), de)
             elif wtype == 'combo':
                 cb = QComboBox()
-                # extra expected to be list of tuples (display, value)
                 for disp, val in extra:
                     cb.addItem(disp, val)
                 if values and name in values:
-                    # try select by value
                     idx = next((i for i in range(cb.count()) if cb.itemData(i) == values[name]), 0)
                     cb.setCurrentIndex(idx)
                 self.inputs[name] = cb
                 self.layout.addRow(QLabel(name.replace('_',' ').capitalize()), cb)
+            elif wtype == 'text':
+                ta = QPlainTextEdit()
+                if values and name in values and values[name] is not None:
+                    ta.setPlainText(str(values[name]))
+                self.inputs[name] = ta
+                self.layout.addRow(QLabel(name.replace('_',' ').capitalize()), ta)
 
         btn_save = QPushButton("Salvar")
         btn_save.clicked.connect(self.accept)
@@ -83,1119 +315,977 @@ class RecordDialog(QDialog):
         data = {}
         for k, widget in self.inputs.items():
             if isinstance(widget, QLineEdit):
-                data[k] = widget.text()
+                data[k] = widget.text().strip()
             elif isinstance(widget, QSpinBox):
                 data[k] = widget.value()
             elif isinstance(widget, QDateEdit):
                 data[k] = widget.date().toString("yyyy-MM-dd")
             elif isinstance(widget, QComboBox):
                 data[k] = widget.currentData()
+            elif isinstance(widget, QPlainTextEdit):
+                data[k] = widget.toPlainText().strip()
         return data
 
-from PyQt5.QtWidgets import QDialog, QLineEdit, QPushButton, QVBoxLayout, QLabel, QMessageBox
-import hashlib
 
-class LoginDialog(QDialog):
+# --------------------
+# Dialogs: Compra (multi-item)
+# --------------------
+class CompraDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Login")
-        layout = QVBoxLayout()
+        self.setWindowTitle("Registrar Compra")
+        self.resize(800, 400)
+        self.layout = QVBoxLayout(self)
 
-        self.user_edit = QLineEdit()
-        self.user_edit.setPlaceholderText("Usuário")
-        layout.addWidget(QLabel("Usuário:"))
-        layout.addWidget(self.user_edit)
-
-        self.pass_edit = QLineEdit()
-        self.pass_edit.setEchoMode(QLineEdit.Password)
-        self.pass_edit.setPlaceholderText("Senha")
-        layout.addWidget(QLabel("Senha:"))
-        layout.addWidget(self.pass_edit)
-
-        btn_login = QPushButton("Entrar")
-        btn_login.clicked.connect(self.check_login)
-        layout.addWidget(btn_login)
-
-        self.setLayout(layout)
-        self.user_data = None
-
-    def check_login(self):
-        user = self.user_edit.text().strip()
-        senha = self.pass_edit.text().strip()
-
-        if not user or not senha:
-            QMessageBox.warning(self, "Erro", "Preencha todos os campos.")
-            return
-
-        try:
-            conn = get_connection()  # Função que retorna a conexão MySQL
-            cursor = conn.cursor(dictionary=True)
-
-            cursor.execute("SELECT * FROM usuarios WHERE usuario=%s", (user,))
-            row = cursor.fetchone()
-
-            if row:
-                # Hash da senha digitada
-                senha_hash = hashlib.sha256(senha.encode()).hexdigest()
-                if row["senha"] == senha_hash:
-                    self.user_data = row  # Guarda dados do usuário logado
-                    self.accept()         # Fecha o diálogo com sucesso
-                else:
-                    QMessageBox.warning(self, "Erro", "Usuário ou senha inválidos.")
-            else:
-                QMessageBox.warning(self, "Erro", "Usuário ou senha inválidos.")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Ocorreu um erro: {e}")
-
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-
-class SistemaFrotaApp(QMainWindow):
-    def __init__(self, current_user):
-        super().__init__()
-        self.current_user = current_user   # 🔹 agora sempre existe
-        self.setWindowTitle("Sistema de Frota - Completo")
-        self.resize(1100, 700)
-        try:
-            self.conn = get_connection()
-            self.cursor = self.conn.cursor()
-        except Exception as e:
-            QMessageBox.critical(self, "DB Error", f"Erro ao conectar ao banco: {e}")
-            raise
-
-        self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
-
-        self.init_fornecedores_tab()
-        self.init_pecas_tab()
-        self.init_veiculos_tab()
-        self.init_compras_tab()
-        self.init_manutencoes_tab()
-        self.init_estoque_tab()
-        self.init_relatorios_tab()
-        self.init_usuarios_tab()
-
-        menubar = QMenuBar(self)
-        menu_usuario = menubar.addMenu("Usuário")
-
-        acao_logoff = QAction("Logoff", self)
-        acao_logoff.triggered.connect(self.logoff)
-        menu_usuario.addAction(acao_logoff)
-
-        self.setMenuBar(menubar)
-        self.setCentralWidget(self.tabs)
-
-    def logoff(self):
-        self.hide()  # fecha a janela principal
-
-        # 🔹 reabre a tela de login
-        self.login_window = LoginDialog()
-        self.login_window.show()
-
-    # ------- Generic helpers -------
-    def run_select(self, sql, params=()):
-        self.cursor.execute(sql, params)
-        return self.cursor.fetchall()
-
-    def run_commit(self, sql, params=()):
-        self.cursor.execute(sql, params)
-        self.conn.commit()
-        return self.cursor.lastrowid
-
-    def show_error(self, msg):
-        QMessageBox.critical(self, "Erro", msg)
-
-    # ------- Fornecedores Tab -------
-    def init_fornecedores_tab(self):
-        tab = QWidget(); layout = QVBoxLayout(tab)
-
-        # filtro
-        h = QHBoxLayout()
-        self.filtro_fornecedor = QLineEdit()
-        self.filtro_fornecedor.setPlaceholderText("Pesquisar fornecedor (nome ou cnpj)...")
-        btn_filtrar = QPushButton("Filtrar")
-        btn_filtrar.clicked.connect(self.filter_fornecedores)
-        h.addWidget(self.filtro_fornecedor); h.addWidget(btn_filtrar)
-        layout.addLayout(h)
-
-        # tabela
-        self.tbl_fornecedor = QTableWidget(); layout.addWidget(self.tbl_fornecedor)
-
-        # botoes
-        btn_layout = QHBoxLayout()
-        btn_add = QPushButton("Adicionar")
-        btn_edit = QPushButton("Editar")
-        btn_del = QPushButton("Excluir")
-        btn_add.clicked.connect(self.add_fornecedor)
-        btn_edit.clicked.connect(self.edit_fornecedor)
-        btn_del.clicked.connect(self.delete_fornecedor)
-        btn_layout.addWidget(btn_add); btn_layout.addWidget(btn_edit); btn_layout.addWidget(btn_del)
-        layout.addLayout(btn_layout)
-
-        self.tabs.addTab(tab, "Fornecedores")
+        # fornecedor combo
+        self.cb_fornecedor = QComboBox()
         self.load_fornecedores()
 
-    def load_fornecedores(self, filtro=None):
-        sql = "SELECT id, nome, cnpj, n_contato, n_contato2, coordenadas FROM fornecedor"
+        self.date_edit = QDateEdit(QDate.currentDate()); self.date_edit.setCalendarPopup(True)
+
+        form = QHBoxLayout()
+        form.addWidget(QLabel("Fornecedor:")); form.addWidget(self.cb_fornecedor)
+        form.addWidget(QLabel("Data:")); form.addWidget(self.date_edit)
+        self.layout.addLayout(form)
+
+        # items table
+        self.tbl = QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(["Peça", "Quantidade", "Preço Unit."])
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.layout.addWidget(self.tbl)
+
+        btns = QHBoxLayout()
+        btn_add = QPushButton("Adicionar Item"); btn_add.clicked.connect(self.add_item)
+        btn_remove = QPushButton("Remover Item"); btn_remove.clicked.connect(self.remove_item)
+        btns.addWidget(btn_add); btns.addWidget(btn_remove); btns.addStretch()
+        self.layout.addLayout(btns)
+
+        hl = QHBoxLayout()
+        self.lbl_total = QLabel("Total: 0,00")
+        btn_save = QPushButton("Salvar"); btn_save.clicked.connect(self.save)
+        btn_cancel = QPushButton("Cancelar"); btn_cancel.clicked.connect(self.reject)
+        hl.addWidget(self.lbl_total); hl.addStretch(); hl.addWidget(btn_save); hl.addWidget(btn_cancel)
+        self.layout.addLayout(hl)
+
+        self.add_item()
+
+    def load_fornecedores(self):
+        self.cb_fornecedor.clear()
+        rows = run_select("SELECT id_fornecedor, nome FROM fornecedores ORDER BY nome")
+        for r in rows:
+            self.cb_fornecedor.addItem(r['nome'], r['id_fornecedor'])
+
+    def add_item(self):
+        r = self.tbl.rowCount(); self.tbl.insertRow(r)
+        cb = QComboBox()
+        pecas = run_select("SELECT id_peca, nome FROM pecas ORDER BY nome")
+        for p in pecas:
+            cb.addItem(p['nome'], p['id_peca'])
+        self.tbl.setCellWidget(r, 0, cb)
+        sp_q = QDoubleSpinBox(); sp_q.setDecimals(4); sp_q.setMaximum(1e9); sp_q.setValue(1)
+        sp_q.valueChanged.connect(self.update_total); self.tbl.setCellWidget(r, 1, sp_q)
+        sp_p = QDoubleSpinBox(); sp_p.setDecimals(4); sp_p.setMaximum(1e12)
+        sp_p.valueChanged.connect(self.update_total); self.tbl.setCellWidget(r, 2, sp_p)
+        self.update_total()
+
+    def remove_item(self):
+        r = self.tbl.currentRow()
+        if r >= 0:
+            self.tbl.removeRow(r)
+            self.update_total()
+
+    def update_total(self):
+        total = 0.0
+        for r in range(self.tbl.rowCount()):
+            qtd = float(self.tbl.cellWidget(r,1).value())
+            preco = float(self.tbl.cellWidget(r,2).value())
+            total += qtd * preco
+        self.lbl_total.setText(f"Total: {total:,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
+
+    def save(self):
+        if self.cb_fornecedor.currentIndex() < 0:
+            QMessageBox.warning(self, "Erro", "Selecione um fornecedor.")
+            return
+        if self.tbl.rowCount() == 0:
+            QMessageBox.warning(self, "Erro", "Adicione ao menos um item.")
+            return
+        fornecedor_id = self.cb_fornecedor.currentData()
+        data_compra = self.date_edit.date().toString("yyyy-MM-dd")
+        try:
+            conn = get_connection(); cur = conn.cursor()
+            cur.execute("INSERT INTO compras (id_fornecedor, data_compra, valor_total) VALUES (%s,%s,%s)",
+                        (fornecedor_id, data_compra, 0))
+            compra_id = cur.lastrowid
+            total = 0.0
+            for r in range(self.tbl.rowCount()):
+                peca_id = self.tbl.cellWidget(r,0).currentData()
+                qtd = float(self.tbl.cellWidget(r,1).value())
+                preco = float(self.tbl.cellWidget(r,2).value())
+                if qtd <= 0:
+                    continue
+                cur.execute("INSERT INTO compras_itens (id_compra, id_peca, quantidade, preco_unitario) VALUES (%s,%s,%s,%s)",
+                            (compra_id, peca_id, qtd, preco))
+                # update estoque
+                cur.execute("INSERT IGNORE INTO estoque (id_peca, quantidade_atual, quantidade_minima) VALUES (%s,0,0)", (peca_id,))
+                cur.execute("UPDATE estoque SET quantidade_atual = quantidade_atual + %s WHERE id_peca = %s", (qtd, peca_id))
+                # movimentacao
+                cur.execute("""INSERT INTO estoque_movimentacoes (id_peca, tipo, quantidade, data_movimentacao, origem, id_referencia, observacao)
+                               VALUES (%s,'entrada',%s,%s,'compra',%s,%s)""", (peca_id, qtd, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), compra_id, f"Compra item - R$ {preco}"))
+                # upsert preco por fornecedor (inserir nova cotação)
+                cur.execute("""INSERT INTO pecas_fornecedores (id_peca, id_fornecedor, preco_unitario, data_cotacao)
+                               VALUES (%s,%s,%s,%s)""", (peca_id, fornecedor_id, preco, data_compra))
+                total += qtd * preco
+            cur.execute("UPDATE compras SET valor_total = %s WHERE id_compra = %s", (total, compra_id))
+            conn.commit()
+            cur.close(); conn.close()
+            QMessageBox.information(self, "OK", "Compra registrada com sucesso.")
+            self.accept()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except: pass
+            QMessageBox.critical(self, "Erro", f"Falha ao registrar compra: {e}")
+
+
+# --------------------
+# Dialogs: Manutenção (multi-item)
+# --------------------
+class ManutencaoDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Registrar Manutenção")
+        self.resize(900, 500)
+        self.layout = QVBoxLayout(self)
+
+        # equipment and metadata
+        self.cb_equip = QComboBox()
+        equips = run_select("SELECT id_equipamento, descricao FROM equipamentos ORDER BY descricao")
+        for e in equips:
+            self.cb_equip.addItem(e['descricao'], e['id_equipamento'])
+
+        self.date_ini = QDateEdit(QDate.currentDate()); self.date_ini.setCalendarPopup(True)
+        self.date_fim = QDateEdit(QDate.currentDate()); self.date_fim.setCalendarPopup(True)
+        self.cb_tipo = QComboBox(); self.cb_tipo.addItems(["preventiva","corretiva","revisao","outro"])
+        self.txt_desc = QPlainTextEdit()
+        self.cb_resp = QComboBox()
+        users = run_select("SELECT id_usuario, nome FROM usuarios WHERE status='ativo' ORDER BY nome")
+        for u in users:
+            self.cb_resp.addItem(u['nome'], u['id_usuario'])
+
+        form = QFormLayout()
+        form.addRow("Equipamento:", self.cb_equip)
+        form.addRow("Data Início:", self.date_ini)
+        form.addRow("Data Fim:", self.date_fim)
+        form.addRow("Tipo:", self.cb_tipo)
+        form.addRow("Responsável:", self.cb_resp)
+        form.addRow("Descrição:", self.txt_desc)
+        self.layout.addLayout(form)
+
+        # items table
+        self.tbl = QTableWidget(0,3)
+        self.tbl.setHorizontalHeaderLabels(["Peça","Quantidade","Preço Unit. ref."])
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.layout.addWidget(self.tbl)
+        btns = QHBoxLayout()
+        btn_add = QPushButton("Adicionar Peça"); btn_add.clicked.connect(self.add_item)
+        btn_remove = QPushButton("Remover Peça"); btn_remove.clicked.connect(self.remove_item)
+        btns.addWidget(btn_add); btns.addWidget(btn_remove); btns.addStretch()
+        self.layout.addLayout(btns)
+
+        hl = QHBoxLayout()
+        self.lbl_total = QLabel("Custo total: 0,00")
+        btn_save = QPushButton("Salvar"); btn_save.clicked.connect(self.save)
+        btn_cancel = QPushButton("Cancelar"); btn_cancel.clicked.connect(self.reject)
+        hl.addWidget(self.lbl_total); hl.addStretch(); hl.addWidget(btn_save); hl.addWidget(btn_cancel)
+        self.layout.addLayout(hl)
+
+        self.add_item()
+
+    def add_item(self):
+        r = self.tbl.rowCount(); self.tbl.insertRow(r)
+        cb = QComboBox()
+        pecas = run_select("SELECT id_peca, nome FROM pecas ORDER BY nome")
+        for p in pecas:
+            cb.addItem(p['nome'], p['id_peca'])
+        self.tbl.setCellWidget(r,0,cb)
+        sp_q = QDoubleSpinBox(); sp_q.setDecimals(4); sp_q.setMaximum(1e9); sp_q.setValue(1); sp_q.valueChanged.connect(self.update_total)
+        self.tbl.setCellWidget(r,1,sp_q)
+        sp_p = QDoubleSpinBox(); sp_p.setDecimals(4); sp_p.setMaximum(1e12); sp_p.valueChanged.connect(self.update_total)
+        self.tbl.setCellWidget(r,2,sp_p)
+        self.update_total()
+
+    def remove_item(self):
+        r = self.tbl.currentRow()
+        if r >= 0:
+            self.tbl.removeRow(r)
+            self.update_total()
+
+    def update_total(self):
+        total = 0.0
+        for r in range(self.tbl.rowCount()):
+            qtd = float(self.tbl.cellWidget(r,1).value())
+            preco = float(self.tbl.cellWidget(r,2).value())
+            total += qtd * preco
+        self.lbl_total.setText(f"Custo total: {total:,.2f}".replace(",", "X").replace(".", ",").replace("X","."))
+
+    def save(self):
+        if self.cb_equip.currentIndex() < 0:
+            QMessageBox.warning(self, "Erro", "Selecione um equipamento.")
+            return
+        if self.tbl.rowCount() == 0:
+            QMessageBox.warning(self, "Erro", "Adicione ao menos uma peça.")
+            return
+        equip_id = self.cb_equip.currentData()
+        data_ini = self.date_ini.date().toString("yyyy-MM-dd")
+        data_fim = self.date_fim.date().toString("yyyy-MM-dd")
+        tipo = self.cb_tipo.currentText()
+        desc = self.txt_desc.toPlainText().strip()
+        resp = self.cb_resp.currentData()
+        try:
+            conn = get_connection(); cur = conn.cursor()
+            cur.execute("INSERT INTO manutencoes (id_equipamento, data_inicio, data_fim, tipo, descricao_servico, custo_total, responsavel) VALUES (%s,%s,%s,%s,%s,0,%s)",
+                        (equip_id, data_ini, data_fim, tipo, desc, resp))
+            manut_id = cur.lastrowid
+            total = 0.0
+            for r in range(self.tbl.rowCount()):
+                peca_id = self.tbl.cellWidget(r,0).currentData()
+                qtd = float(self.tbl.cellWidget(r,1).value())
+                preco = float(self.tbl.cellWidget(r,2).value())
+                if qtd <= 0:
+                    continue
+                # check stock
+                cur.execute("SELECT quantidade_atual FROM estoque WHERE id_peca = %s", (peca_id,))
+                row = cur.fetchone()
+                have = float(row[0]) if row and row[0] is not None else 0.0
+                if have < qtd:
+                    raise RuntimeError(f"Estoque insuficiente para a peça id {peca_id} (tem {have}, precisa {qtd})")
+                cur.execute("INSERT INTO manutencoes_pecas (id_manutencao, id_peca, quantidade_usada, preco_unitario) VALUES (%s,%s,%s,%s)",
+                            (manut_id, peca_id, qtd, preco))
+                # decrement estoque
+                cur.execute("UPDATE estoque SET quantidade_atual = quantidade_atual - %s WHERE id_peca = %s", (qtd, peca_id))
+                # movimentacao
+                cur.execute("""INSERT INTO estoque_movimentacoes (id_peca, tipo, quantidade, data_movimentacao, origem, id_referencia, observacao)
+                               VALUES (%s,'saida',%s,%s,'manutencao',%s,%s)""", (peca_id, qtd, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), manut_id, "Uso em manutenção"))
+                total += qtd * preco
+            cur.execute("UPDATE manutencoes SET custo_total = %s WHERE id_manutencao = %s", (total, manut_id))
+            conn.commit()
+            cur.close(); conn.close()
+            QMessageBox.information(self, "OK", "Manutenção registrada com sucesso.")
+            self.accept()
+        except Exception as e:
+            try: conn.rollback()
+            except: pass
+            QMessageBox.critical(self, "Erro", f"Falha ao registrar manutenção: {e}")
+
+
+# --------------------
+# Dialog: Orçamento Dinâmico
+# --------------------
+class OrcamentoDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Orçamento Dinâmico")
+        self.resize(820, 450)
+        self.layout = QVBoxLayout(self)
+        self.tbl = QTableWidget(0, 3)
+        self.tbl.setHorizontalHeaderLabels(["Peça", "Quantidade", "Menor Fornecedor/Preço"])
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.layout.addWidget(self.tbl)
+        btns = QHBoxLayout()
+        btn_add = QPushButton("Adicionar Peça"); btn_add.clicked.connect(self.add_row)
+        btn_calc = QPushButton("Calcular"); btn_calc.clicked.connect(self.calculate)
+        btn_export = QPushButton("Exportar CSV"); btn_export.clicked.connect(self.export_csv)
+        btns.addWidget(btn_add); btns.addStretch(); btns.addWidget(btn_calc); btns.addWidget(btn_export)
+        self.layout.addLayout(btns)
+        self.lbl_total = QLabel("Total estimado: 0,00")
+        self.layout.addWidget(self.lbl_total)
+        self.add_row()
+        self.result_rows = []
+
+    def add_row(self):
+        r = self.tbl.rowCount(); self.tbl.insertRow(r)
+        cb = QComboBox(); pecas = run_select("SELECT id_peca, nome FROM pecas ORDER BY nome")
+        for p in pecas: cb.addItem(p['nome'], p['id_peca'])
+        self.tbl.setCellWidget(r, 0, cb)
+        sp = QDoubleSpinBox(); sp.setDecimals(3); sp.setMaximum(1e9); sp.setValue(1); self.tbl.setCellWidget(r,1,sp)
+        lbl = QLabel("—"); self.tbl.setCellWidget(r,2,lbl)
+
+    def calculate(self):
+        self.result_rows.clear(); total = 0.0
+        for r in range(self.tbl.rowCount()):
+            peca_id = self.tbl.cellWidget(r,0).currentData()
+            peca_nome = self.tbl.cellWidget(r,0).currentText()
+            qtd = float(self.tbl.cellWidget(r,1).value())
+            # find latest cotation and cheapest among latest
+            # get latest date for this piece
+            rows = run_select("""SELECT pf.id_fornecedor, f.nome AS fornecedor, pf.preco_unitario, pf.data_cotacao
+                                 FROM pecas_fornecedores pf JOIN fornecedores f USING (id_fornecedor)
+                                 WHERE pf.id_peca = %s AND pf.data_cotacao = (
+                                     SELECT MAX(pf2.data_cotacao) FROM pecas_fornecedores pf2 WHERE pf2.id_peca = pf.id_peca
+                                 )
+                                 ORDER BY pf.preco_unitario ASC LIMIT 1""", (peca_id,))
+            if rows:
+                forn_id = rows[0]['id_fornecedor']; forn_nome = rows[0]['fornecedor']; preco = float(rows[0]['preco_unitario'])
+                line_total = preco * qtd; total += line_total
+                self.result_rows.append((peca_id, peca_nome, qtd, forn_id, forn_nome, preco, line_total))
+                self.tbl.cellWidget(r,2).setText(f"{forn_nome} @ {preco:,.4f}".replace(',','X').replace('.',',').replace('X','.'))
+            else:
+                self.tbl.cellWidget(r,2).setText("Sem cotação")
+        self.lbl_total.setText(f"Total estimado: {total:,.2f}".replace(',','X').replace('.',',').replace('X','.'))
+
+    def export_csv(self):
+        if not self.result_rows:
+            QMessageBox.warning(self, "Erro", "Calcule o orçamento primeiro.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Salvar CSV", "orcamento.csv", "CSV (*.csv)")
+        if not path: return
+        with open(path, "w", newline='', encoding='utf-8') as f:
+            w = csv.writer(f, delimiter=';')
+            w.writerow(["Peça","Quantidade","Fornecedor","Preço Unit.","Total"])
+            for (_, nome, qtd, _, forn, preco, total) in self.result_rows:
+                w.writerow([nome, qtd, forn, f"{preco:.4f}".replace('.',','), f"{total:.2f}".replace('.',',')])
+        QMessageBox.information(self, "Exportado", f"CSV salvo em: {path}")
+
+
+# --------------------
+# Dialog: Import Excel
+# --------------------
+class ImportDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Importar Excel")
+        self.resize(600, 200)
+        self.layout = QVBoxLayout(self)
+        h = QHBoxLayout()
+        self.file_edit = QLineEdit(); btn_browse = QPushButton("Procurar"); btn_browse.clicked.connect(self.browse)
+        h.addWidget(self.file_edit); h.addWidget(btn_browse)
+        self.layout.addLayout(h)
+        self.cb_tipo = QComboBox(); self.cb_tipo.addItems(["fornecedores","pecas","pecas_fornecedores"])
+        self.layout.addWidget(QLabel("Tipo de importação:")); self.layout.addWidget(self.cb_tipo)
+        self.cb_usuario = QComboBox(); users = run_select("SELECT id_usuario, nome FROM usuarios WHERE status='ativo'"); 
+        for u in users: self.cb_usuario.addItem(u['nome'], u['id_usuario'])
+        self.layout.addWidget(QLabel("Usuário responsável:")); self.layout.addWidget(self.cb_usuario)
+        hl = QHBoxLayout(); btn_ok = QPushButton("Importar"); btn_ok.clicked.connect(self.do_import); btn_cancel = QPushButton("Cancelar"); btn_cancel.clicked.connect(self.reject)
+        hl.addStretch(); hl.addWidget(btn_ok); hl.addWidget(btn_cancel); self.layout.addLayout(hl)
+        if not HAS_PANDAS:
+            QMessageBox.warning(self, "Dependência", "Pandas não encontrado. Instale: pip install pandas openpyxl")
+
+    def browse(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Selecionar Excel", "", "Planilhas (*.xlsx *.xls)")
+        if path: self.file_edit.setText(path)
+
+    def do_import(self):
+        path = self.file_edit.text().strip()
+        if not path or not os.path.exists(path): QMessageBox.warning(self, "Erro", "Selecione um arquivo válido."); return
+        if not HAS_PANDAS: QMessageBox.warning(self, "Erro", "Pandas não está instalado."); return
+        tipo = self.cb_tipo.currentText(); user_id = self.cb_usuario.currentData()
+        h = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        try:
+            df = pd.read_excel(path)
+            conn = get_connection(); cur = conn.cursor()
+            if tipo == "fornecedores":
+                # expect columns: nome (required), cnpj_cpf, endereco, telefone, email, observacoes
+                for _, row in df.iterrows():
+                    nome = str(row.get('nome', '') or row.get('Nome','')).strip()
+                    if not nome: continue
+                    cnpj = str(row.get('cnpj_cpf','') or row.get('CNPJ_CPF',''))
+                    endereco = str(row.get('endereco','') or row.get('Endereco',''))
+                    telefone = str(row.get('telefone','') or row.get('Telefone',''))
+                    email = str(row.get('email','') or row.get('Email',''))
+                    observ = str(row.get('observacoes','') or row.get('Observacoes',''))
+                    cur.execute("INSERT INTO fornecedores (nome, cnpj_cpf, endereco, telefone, email, observacoes) VALUES (%s,%s,%s,%s,%s,%s)",
+                                (nome, cnpj, endereco, telefone, email, observ))
+            elif tipo == "pecas":
+                for _, row in df.iterrows():
+                    nome = str(row.get('nome', '') or row.get('Nome','')).strip()
+                    if not nome: continue
+                    descricao = str(row.get('descricao','') or row.get('Descricao',''))
+                    codigo = str(row.get('codigo_interno','') or row.get('Codigo_interno',''))
+                    unidade = str(row.get('unidade_medida','un') or row.get('Unidade_medida','un'))
+                    cur.execute("INSERT INTO pecas (nome, descricao, codigo_interno, unidade_medida) VALUES (%s,%s,%s,%s)",
+                                (nome, descricao, codigo, unidade))
+                    # ensure estoque row exists
+                    cur.execute("INSERT IGNORE INTO estoque (id_peca, quantidade_atual, quantidade_minima) VALUES (LAST_INSERT_ID(),0,0)")
+            elif tipo == "pecas_fornecedores":
+                for _, row in df.iterrows():
+                    id_peca = int(row.get('id_peca') or row.get('ID_PECA') or 0)
+                    id_fornecedor = int(row.get('id_fornecedor') or row.get('ID_FORNECEDOR') or 0)
+                    preco = float(row.get('preco_unitario') or row.get('PRECO_UNITARIO') or 0)
+                    dt = row.get('data_cotacao') or row.get('DATA_COTACAO')
+                    if isinstance(dt, (datetime,)):
+                        dt_s = dt.strftime("%Y-%m-%d")
+                    else:
+                        dt_s = str(dt)
+                    if id_peca and id_fornecedor:
+                        cur.execute("INSERT INTO pecas_fornecedores (id_peca, id_fornecedor, preco_unitario, data_cotacao) VALUES (%s,%s,%s,%s)",
+                                    (id_peca, id_fornecedor, preco, dt_s))
+            else:
+                raise RuntimeError("Tipo inválido")
+            # log
+            cur.execute("INSERT INTO importacoes (arquivo_nome, arquivo_hash, tipo_importacao, data_importacao, usuario_responsavel, status, mensagem_log) VALUES (%s,%s,%s,%s,%s,'sucesso',%s)",
+                        (os.path.basename(path), h, tipo, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id, f"Linhas: {len(df)}"))
+            conn.commit(); cur.close(); conn.close()
+            QMessageBox.information(self, "Importado", "Importação finalizada com sucesso.")
+            self.accept()
+        except Exception as e:
+            try: conn.rollback()
+            except: pass
+            QMessageBox.critical(self, "Erro", f"Falha na importação: {e}")
+
+
+# --------------------
+# Main Window
+# --------------------
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Sistema de Frota (MySQL)")
+        self.resize(1200, 700)
+        tabs = QTabWidget()
+
+        # Tabs: fornecedores, pecas, precos, estoque, compras, manutencoes, orcamento, import, usuarios, equipamentos
+        self.tab_fornecedores = QWidget(); self.init_fornecedores_tab()
+        self.tab_pecas = QWidget(); self.init_pecas_tab()
+        self.tab_precos = QWidget(); self.init_precos_tab()
+        self.tab_estoque = QWidget(); self.init_estoque_tab()
+        self.tab_compras = QWidget(); self.init_compras_tab()
+        self.tab_manut = QWidget(); self.init_manut_tab()
+        self.tab_orc = QWidget(); self.init_orc_tab()
+        self.tab_import = QWidget(); self.init_import_tab()
+        self.tab_usuarios = QWidget(); self.init_usuarios_tab()
+        self.tab_equip = QWidget(); self.init_equip_tab()
+
+        tabs.addTab(self.tab_fornecedores, "Fornecedores")
+        tabs.addTab(self.tab_pecas, "Peças")
+        tabs.addTab(self.tab_precos, "Preços por Fornecedor")
+        tabs.addTab(self.tab_estoque, "Estoque")
+        tabs.addTab(self.tab_compras, "Compras")
+        tabs.addTab(self.tab_manut, "Manutenções")
+        tabs.addTab(self.tab_orc, "Orçamentador")
+        tabs.addTab(self.tab_import, "Importações")
+        tabs.addTab(self.tab_usuarios, "Usuários")
+        tabs.addTab(self.tab_equip, "Equipamentos")
+
+        self.setCentralWidget(tabs)
+
+        # Toolbar
+        tb = self.addToolBar("Ações")
+        act_compra = QAction("Nova Compra", self); act_compra.triggered.connect(self.open_compra_dialog)
+        act_manut = QAction("Nova Manutenção", self); act_manut.triggered.connect(self.open_manut_dialog)
+        act_orc = QAction("Orçamento Dinâmico", self); act_orc.triggered.connect(self.open_orc_dialog)
+        act_imp = QAction("Importar Excel", self); act_imp.triggered.connect(self.open_import_dialog)
+        tb.addAction(act_compra); tb.addAction(act_manut); tb.addAction(act_orc); tb.addAction(act_imp)
+
+    # ------- Fornecedores -------
+    def init_fornecedores_tab(self):
+        layout = QVBoxLayout(self.tab_fornecedores)
+        h = QHBoxLayout()
+        self.filtro_fornecedor = QLineEdit(); self.filtro_fornecedor.setPlaceholderText("Pesquisar fornecedor...")
+        btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_fornecedores)
+        h.addWidget(self.filtro_fornecedor); h.addWidget(btn)
+        layout.addLayout(h)
+        self.tbl_fornecedores = QTableWidget(); layout.addWidget(self.tbl_fornecedores)
+        bl = QHBoxLayout()
+        btn_add = QPushButton("Adicionar"); btn_add.clicked.connect(self.add_fornecedor)
+        btn_edit = QPushButton("Editar"); btn_edit.clicked.connect(self.edit_fornecedor)
+        btn_del = QPushButton("Excluir"); btn_del.clicked.connect(self.del_fornecedor)
+        bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del); bl.addStretch()
+        layout.addLayout(bl)
+        self.load_fornecedores()
+
+    def load_fornecedores(self):
+        filtro = self.filtro_fornecedor.text().strip()
+        sql = "SELECT id_fornecedor, nome, cnpj_cpf, telefone, email, endereco FROM fornecedores"
         params = ()
         if filtro:
-            sql += " WHERE nome LIKE %s OR cnpj LIKE %s"
+            sql += " WHERE nome LIKE %s OR cnpj_cpf LIKE %s"
             params = (f"%{filtro}%", f"%{filtro}%")
-        rows = self.run_select(sql, params)
-        self.tbl_fornecedor.setColumnCount(6)
-        self.tbl_fornecedor.setHorizontalHeaderLabels(["ID","Nome","CNPJ","Contato1","Contato2","Coordenadas"])
-        header = self.tbl_fornecedor.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-        header.setStretchLastSection(True)
-        self.tbl_fornecedor.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            for j, val in enumerate(row):
-                self.tbl_fornecedor.setItem(i, j, QTableWidgetItem(str(val)))
-
-    def filter_fornecedores(self):
-        self.load_fornecedores(self.filtro_fornecedor.text().strip())
+        rows = run_select(sql, params)
+        self.tbl_fornecedores.setColumnCount(6)
+        self.tbl_fornecedores.setHorizontalHeaderLabels(["ID","Nome","CNPJ/CPF","Telefone","Email","Endereço"])
+        self.tbl_fornecedores.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.tbl_fornecedores.setItem(i,0,QTableWidgetItem(str(r['id_fornecedor'])))
+            self.tbl_fornecedores.setItem(i,1,QTableWidgetItem(r['nome']))
+            self.tbl_fornecedores.setItem(i,2,QTableWidgetItem(str(r.get('cnpj_cpf') or '')))
+            self.tbl_fornecedores.setItem(i,3,QTableWidgetItem(str(r.get('telefone') or '')))
+            self.tbl_fornecedores.setItem(i,4,QTableWidgetItem(str(r.get('email') or '')))
+            self.tbl_fornecedores.setItem(i,5,QTableWidgetItem(str(r.get('endereco') or '')))
+        header = self.tbl_fornecedores.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
     def add_fornecedor(self):
-        if self.current_user["tipo"] != "admin":
-            QMessageBox.warning(self, "Permissão negada", "Somente administradores podem adicionar fornecedores.")
-            return
-        fields = [("nome","line",None),("cnpj","line",None),("n_contato","line",None),("n_contato2","line",None),("coordenadas","line",None)]
+        fields = [("nome","line",None),("cnpj_cpf","line",None),("endereco","line",None),("telefone","line",None),("email","line",None),("observacoes","text",None)]
         dlg = RecordDialog("Novo Fornecedor", fields, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                self.run_commit("INSERT INTO fornecedor (nome, cnpj, n_contato, n_contato2, coordenadas) VALUES (%s,%s,%s,%s,%s)",
-                                (data['nome'], data['cnpj'], data['n_contato'], data['n_contato2'], data['coordenadas']))
-                QMessageBox.information(self, "OK", "Fornecedor criado.")
+                run_commit("INSERT INTO fornecedores (nome, cnpj_cpf, endereco, telefone, email, observacoes) VALUES (%s,%s,%s,%s,%s,%s)",
+                           (data['nome'], data['cnpj_cpf'], data['endereco'], data['telefone'], data['email'], data['observacoes']))
+                QMessageBox.information(self, "OK", "Fornecedor inserido.")
                 self.load_fornecedores()
             except Exception as e:
-                self.show_error(f"Erro ao inserir fornecedor: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
     def edit_fornecedor(self):
-        row = self.tbl_fornecedor.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, "Seleção", "Selecione uma linha para editar.")
-            return
-        id_ = int(self.tbl_fornecedor.item(row,0).text())
-        vals = { "nome": self.tbl_fornecedor.item(row,1).text(),
-                 "cnpj": self.tbl_fornecedor.item(row,2).text(),
-                 "n_contato": self.tbl_fornecedor.item(row,3).text(),
-                 "n_contato2": self.tbl_fornecedor.item(row,4).text(),
-                 "coordenadas": self.tbl_fornecedor.item(row,5).text()
-               }
-        fields = [("nome","line",None),("cnpj","line",None),("n_contato","line",None),("n_contato2","line",None),("coordenadas","line",None)]
+        row = self.tbl_fornecedores.currentRow()
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um fornecedor."); return
+        id_ = int(self.tbl_fornecedores.item(row,0).text())
+        vals = {
+            "nome": self.tbl_fornecedores.item(row,1).text(),
+            "cnpj_cpf": self.tbl_fornecedores.item(row,2).text(),
+            "telefone": self.tbl_fornecedores.item(row,3).text(),
+            "email": self.tbl_fornecedores.item(row,4).text(),
+            "endereco": self.tbl_fornecedores.item(row,5).text()
+        }
+        fields = [("nome","line",None),("cnpj_cpf","line",None),("telefone","line",None),("email","line",None),("endereco","line",None)]
         dlg = RecordDialog("Editar Fornecedor", fields, values=vals, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                self.run_commit("UPDATE fornecedor SET nome=%s, cnpj=%s, n_contato=%s, n_contato2=%s, coordenadas=%s WHERE id=%s",
-                                (data['nome'], data['cnpj'], data['n_contato'], data['n_contato2'], data['coordenadas'], id_))
-                QMessageBox.information(self, "OK", "Fornecedor atualizado.")
-                self.load_fornecedores()
+                run_commit("UPDATE fornecedores SET nome=%s, cnpj_cpf=%s, telefone=%s, email=%s, endereco=%s WHERE id_fornecedor=%s",
+                           (data['nome'], data['cnpj_cpf'], data['telefone'], data['email'], data['endereco'], id_))
+                QMessageBox.information(self, "OK", "Fornecedor atualizado."); self.load_fornecedores()
             except Exception as e:
-                self.show_error(f"Erro ao atualizar fornecedor: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    def delete_fornecedor(self):
-        row = self.tbl_fornecedor.currentRow()
-        if row < 0:
-            QMessageBox.warning(self, "Seleção", "Selecione uma linha para excluir.")
-            return
-        id_ = int(self.tbl_fornecedor.item(row,0).text())
+    def del_fornecedor(self):
+        row = self.tbl_fornecedores.currentRow()
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um fornecedor."); return
+        id_ = int(self.tbl_fornecedores.item(row,0).text())
         if QMessageBox.question(self, "Confirmar", "Excluir fornecedor?") == QMessageBox.Yes:
             try:
-                self.run_commit("DELETE FROM fornecedor WHERE id=%s", (id_,))
-                QMessageBox.information(self, "OK", "Fornecedor excluído.")
-                self.load_fornecedores()
+                run_commit("DELETE FROM fornecedores WHERE id_fornecedor=%s", (id_,))
+                QMessageBox.information(self, "OK", "Fornecedor excluído."); self.load_fornecedores()
             except Exception as e:
-                self.show_error(f"Erro ao excluir: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    # ------- Pecas Tab -------
+    # ------- Peças -------
     def init_pecas_tab(self):
-        tab = QWidget(); layout = QVBoxLayout(tab)
+        layout = QVBoxLayout(self.tab_pecas)
         h = QHBoxLayout()
         self.filtro_peca = QLineEdit(); self.filtro_peca.setPlaceholderText("Pesquisar peça...")
-        btn = QPushButton("Filtrar"); btn.clicked.connect(self.filter_pecas)
+        btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_pecas)
         h.addWidget(self.filtro_peca); h.addWidget(btn); layout.addLayout(h)
-
         self.tbl_pecas = QTableWidget(); layout.addWidget(self.tbl_pecas)
-
         bl = QHBoxLayout()
-        btn_add = QPushButton("Adicionar"); btn_edit = QPushButton("Editar"); btn_del = QPushButton("Excluir")
-        btn_add.clicked.connect(self.add_peca); btn_edit.clicked.connect(self.edit_peca); btn_del.clicked.connect(self.delete_peca)
-        bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del)
+        btn_add = QPushButton("Adicionar"); btn_add.clicked.connect(self.add_peca)
+        btn_edit = QPushButton("Editar"); btn_edit.clicked.connect(self.edit_peca)
+        btn_del = QPushButton("Excluir"); btn_del.clicked.connect(self.del_peca)
+        bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del); bl.addStretch()
         layout.addLayout(bl)
-
-        self.tabs.addTab(tab, "Itens")
         self.load_pecas()
 
-    def load_pecas(self, filtro=None):
-        sql = "SELECT id, nome FROM pecas"
+    def load_pecas(self):
+        filtro = self.filtro_peca.text().strip()
+        sql = "SELECT id_peca, nome, descricao, codigo_interno, unidade_medida FROM pecas"
         params = ()
         if filtro:
-            sql += " WHERE nome LIKE %s"
-            params = (f"%{filtro}%",)
-        rows = self.run_select(sql, params)
-        self.tbl_pecas.setColumnCount(2)
-        self.tbl_pecas.setHorizontalHeaderLabels(["ID","Nome"])
-        header = self.tbl_pecas.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-        header.setStretchLastSection(True)
+            sql += " WHERE nome LIKE %s OR codigo_interno LIKE %s"
+            params = (f"%{filtro}%", f"%{filtro}%")
+        rows = run_select(sql, params)
+        self.tbl_pecas.setColumnCount(5)
+        self.tbl_pecas.setHorizontalHeaderLabels(["ID","Nome","Descrição","Código","Unidade"])
         self.tbl_pecas.setRowCount(len(rows))
-        for i,row in enumerate(rows):
-            for j,val in enumerate(row):
-                self.tbl_pecas.setItem(i,j,QTableWidgetItem(str(val)))
-
-    def filter_pecas(self):
-        self.load_pecas(self.filtro_peca.text().strip())
+        for i,r in enumerate(rows):
+            self.tbl_pecas.setItem(i,0,QTableWidgetItem(str(r['id_peca'])))
+            self.tbl_pecas.setItem(i,1,QTableWidgetItem(r['nome']))
+            self.tbl_pecas.setItem(i,2,QTableWidgetItem(str(r.get('descricao') or '')))
+            self.tbl_pecas.setItem(i,3,QTableWidgetItem(str(r.get('codigo_interno') or '')))
+            self.tbl_pecas.setItem(i,4,QTableWidgetItem(str(r.get('unidade_medida') or '')))
+        header = self.tbl_pecas.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
     def add_peca(self):
-        fields = [("nome","line",None), ("estoque_minimo", "int", None)]
+        fields = [("nome","line",None), ("descricao","line",None), ("codigo_interno","line",None), ("unidade_medida","line",None)]
         dlg = RecordDialog("Nova Peça", fields, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                self.run_commit("INSERT INTO pecas (nome, estoque_minimo) VALUES (%s, %s)", (data['nome'], data['estoque_minimo']))
-                QMessageBox.information(self, "OK", "Peça inserida.")
-                self.load_pecas()
+                run_commit("INSERT INTO pecas (nome, descricao, codigo_interno, unidade_medida) VALUES (%s,%s,%s,%s)",
+                           (data['nome'], data['descricao'], data['codigo_interno'], data['unidade_medida'])) 
+                # ensure estoque row
+                run_commit("INSERT IGNORE INTO estoque (id_peca, quantidade_atual, quantidade_minima) SELECT id_peca,0,0 FROM pecas WHERE codigo_interno=%s", (data['codigo_interno'],))
+                QMessageBox.information(self, "OK", "Peça inserida."); self.load_pecas(); self.load_estoque()
             except Exception as e:
-                self.show_error(f"Erro ao inserir peça: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
     def edit_peca(self):
         row = self.tbl_pecas.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione uma peça para editar.")
-            return
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma peça."); return
         id_ = int(self.tbl_pecas.item(row,0).text())
-        vals = {"nome": self.tbl_pecas.item(row,1).text()}
-        dlg = RecordDialog("Editar Peça", [("nome","line",None)], values=vals, parent=self)
+        vals = {"nome": self.tbl_pecas.item(row,1).text(), "descricao": self.tbl_pecas.item(row,2).text(), "codigo_interno": self.tbl_pecas.item(row,3).text(), "unidade_medida": self.tbl_pecas.item(row,4).text()}
+        fields = [("nome","line",None), ("descricao","line",None), ("codigo_interno","line",None), ("unidade_medida","line",None)]
+        dlg = RecordDialog("Editar Peça", fields, values=vals, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                self.run_commit("UPDATE pecas SET nome=%s, estoque_minimo=%s WHERE id=%s", (data['nome'], id_))
-                QMessageBox.information(self,"OK","Peça atualizada.")
-                self.load_pecas()
+                run_commit("UPDATE pecas SET nome=%s, descricao=%s, codigo_interno=%s, unidade_medida=%s WHERE id_peca=%s",
+                           (data['nome'], data['descricao'], data['codigo_interno'], data['unidade_medida'], id_))
+                QMessageBox.information(self, "OK", "Peça atualizada."); self.load_pecas(); self.load_estoque()
             except Exception as e:
-                self.show_error(f"Erro ao atualizar peça: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    def delete_peca(self):
+    def del_peca(self):
         row = self.tbl_pecas.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione uma peça para excluir.")
-            return
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma peça."); return
         id_ = int(self.tbl_pecas.item(row,0).text())
-        if QMessageBox.question(self,"Confirmar","Excluir peça?")==QMessageBox.Yes:
+        if QMessageBox.question(self, "Confirmar", "Excluir peça?")==QMessageBox.Yes:
             try:
-                self.run_commit("DELETE FROM pecas WHERE id=%s",(id_,))
-                QMessageBox.information(self,"OK","Peça excluída.")
-                self.load_pecas()
+                run_commit("DELETE FROM pecas WHERE id_peca=%s", (id_,)); QMessageBox.information(self, "OK", "Peça excluída."); self.load_pecas(); self.load_estoque()
             except Exception as e:
-                self.show_error(f"Erro ao excluir peça: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    # ------- Veiculos Tab -------
-    def init_veiculos_tab(self):
-        tab = QWidget(); layout = QVBoxLayout(tab)
+    # ------- Preços por Fornecedor -------
+    def init_precos_tab(self):
+        layout = QVBoxLayout(self.tab_precos)
         h = QHBoxLayout()
-        self.filtro_veiculo = QLineEdit(); self.filtro_veiculo.setPlaceholderText("Pesquisar placa/modelo...")
-        btn = QPushButton("Filtrar"); btn.clicked.connect(self.filter_veiculos)
-        h.addWidget(self.filtro_veiculo); h.addWidget(btn); layout.addLayout(h)
-
-        self.tbl_veiculos = QTableWidget(); layout.addWidget(self.tbl_veiculos)
-
+        self.filtro_precos = QLineEdit(); self.filtro_precos.setPlaceholderText("Pesquisar peça ou fornecedor...")
+        btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_precos)
+        h.addWidget(self.filtro_precos); h.addWidget(btn); layout.addLayout(h)
+        self.tbl_precos = QTableWidget(); layout.addWidget(self.tbl_precos)
         bl = QHBoxLayout()
-        btn_add = QPushButton("Adicionar"); btn_edit = QPushButton("Editar"); btn_del = QPushButton("Excluir")
-        btn_add.clicked.connect(self.add_veiculo); btn_edit.clicked.connect(self.edit_veiculo); btn_del.clicked.connect(self.delete_veiculo)
-        bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del)
+        btn_add = QPushButton("Adicionar Cotação"); btn_add.clicked.connect(self.add_preco)
+        btn_del = QPushButton("Excluir Cotação"); btn_del.clicked.connect(self.del_preco)
+        bl.addWidget(btn_add); bl.addWidget(btn_del); bl.addStretch()
         layout.addLayout(bl)
+        self.load_precos()
 
-        self.tabs.addTab(tab, "Veículos")
-        self.load_veiculos()
-
-    def load_veiculos(self, filtro=None):
-        sql = "SELECT id, placa, tipo, modelo, chassi, renavam, ano, regime, tipo_equipamento FROM veiculos"
-        params = ()
-        if filtro:
-            sql += " WHERE placa LIKE %s OR modelo LIKE %s"
-            params = (f"%{filtro}%", f"%{filtro}%")
-        rows = self.run_select(sql, params)
-        self.tbl_veiculos.setColumnCount(9)
-        self.tbl_veiculos.setHorizontalHeaderLabels(["ID","Placa","Tipo","Modelo","Chassi","Renavam","Ano","Regime","TipoEquip"])
-        header = self.tbl_veiculos.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-        header.setStretchLastSection(True)
-        self.tbl_veiculos.setRowCount(len(rows))
-        for i,row in enumerate(rows):
-            for j,val in enumerate(row):
-                self.tbl_veiculos.setItem(i,j,QTableWidgetItem(str(val)))
-
-    def filter_veiculos(self):
-        self.load_veiculos(self.filtro_veiculo.text().strip())
-
-    def add_veiculo(self):
-        fields = [("placa","line",None),("tipo","line",None),("modelo","line",None),("chassi","line",None),
-                  ("renavam","line",None),("ano","int",None),("regime","line",None),("tipo_equipamento","line",None)]
-        dlg = RecordDialog("Novo Veículo", fields, parent=self)
-        if dlg.exec_():
-            data = dlg.get_data()
-            try:
-                self.run_commit("INSERT INTO veiculos (placa,tipo,modelo,chassi,renavam,ano,regime,tipo_equipamento) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                                (data['placa'],data['tipo'],data['modelo'],data['chassi'],data['renavam'],data['ano'],data['regime'],data['tipo_equipamento']))
-                QMessageBox.information(self,"OK","Veículo inserido.")
-                self.load_veiculos()
-            except Exception as e:
-                self.show_error(f"Erro ao inserir veículo: {e}")
-
-    def edit_veiculo(self):
-        row = self.tbl_veiculos.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione um veículo.")
-            return
-        id_ = int(self.tbl_veiculos.item(row,0).text())
-        vals = { "placa":self.tbl_veiculos.item(row,1).text(), "tipo":self.tbl_veiculos.item(row,2).text(),
-                 "modelo":self.tbl_veiculos.item(row,3).text(), "chassi":self.tbl_veiculos.item(row,4).text(),
-                 "renavam":self.tbl_veiculos.item(row,5).text(), "ano":int(self.tbl_veiculos.item(row,6).text()),
-                 "regime":self.tbl_veiculos.item(row,7).text(), "tipo_equipamento":self.tbl_veiculos.item(row,8).text() }
-        fields = [("placa","line",None),("tipo","line",None),("modelo","line",None),("chassi","line",None),
-                  ("renavam","line",None),("ano","int",None),("regime","line",None),("tipo_equipamento","line",None)]
-        dlg = RecordDialog("Editar Veículo", fields, values=vals, parent=self)
-        if dlg.exec_():
-            data = dlg.get_data()
-            try:
-                self.run_commit("UPDATE veiculos SET placa=%s,tipo=%s,modelo=%s,chassi=%s,renavam=%s,ano=%s,regime=%s,tipo_equipamento=%s WHERE id=%s",
-                                (data['placa'],data['tipo'],data['modelo'],data['chassi'],data['renavam'],data['ano'],data['regime'],data['tipo_equipamento'], id_))
-                QMessageBox.information(self,"OK","Veículo atualizado.")
-                self.load_veiculos()
-            except Exception as e:
-                self.show_error(f"Erro ao atualizar veículo: {e}")
-
-    def delete_veiculo(self):
-        row = self.tbl_veiculos.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione um veículo.")
-            return
-        id_ = int(self.tbl_veiculos.item(row,0).text())
-        if QMessageBox.question(self,"Confirmar","Excluir veículo?")==QMessageBox.Yes:
-            try:
-                self.run_commit("DELETE FROM veiculos WHERE id=%s",(id_,))
-                QMessageBox.information(self,"OK","Veículo excluído.")
-                self.load_veiculos()
-            except Exception as e:
-                self.show_error(f"Erro ao excluir veículo: {e}")
-
-    # ------- Compras Tab -------
-    def init_compras_tab(self):
-        tab = QWidget(); layout = QVBoxLayout(tab)
-        h = QHBoxLayout()
-        self.filtro_compra = QLineEdit(); self.filtro_compra.setPlaceholderText("Pesquisar compras por peça/fornecedor...")
-        btn = QPushButton("Filtrar"); btn.clicked.connect(self.filter_compras)
-        h.addWidget(self.filtro_compra); h.addWidget(btn); layout.addLayout(h)
-
-        self.tbl_compras = QTableWidget(); layout.addWidget(self.tbl_compras)
-
-        bl = QHBoxLayout()
-        btn_add = QPushButton("Registrar Compra"); btn_edit=QPushButton("Editar"); btn_del=QPushButton("Excluir")
-        btn_add.clicked.connect(self.add_compra); btn_edit.clicked.connect(self.edit_compra); btn_del.clicked.connect(self.delete_compra)
-        bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del)
-        layout.addLayout(bl)
-
-        self.tabs.addTab(tab, "Compras")
-        self.load_compras()
-
-    def load_compras(self, filtro=None):
-        # Join to show readable names
-        sql = ("SELECT c.id, p.nome, f.nome, c.data_compra, c.quantidade, c.valor_unitario, (c.quantidade * c.valor_unitario) "
-               "FROM compra c JOIN pecas p ON c.id_peca = p.id JOIN fornecedor f ON c.id_fornecedor = f.id")
+    def load_precos(self):
+        filtro = self.filtro_precos.text().strip()
+        sql = """SELECT pf.id_peca_fornecedor, p.nome AS peca, f.nome AS fornecedor, pf.preco_unitario, pf.data_cotacao
+                 FROM pecas_fornecedores pf
+                 JOIN pecas p ON pf.id_peca = p.id_peca
+                 JOIN fornecedores f ON pf.id_fornecedor = f.id_fornecedor"""
         params = ()
         if filtro:
             sql += " WHERE p.nome LIKE %s OR f.nome LIKE %s"
             params = (f"%{filtro}%", f"%{filtro}%")
-        rows = self.run_select(sql, params)
-        self.tbl_compras.setColumnCount(7)
-        self.tbl_compras.setHorizontalHeaderLabels(["ID","Peça","Fornecedor","Data","Qtd","Preco Unit","Valor Total"])
-        header = self.tbl_compras.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-        header.setStretchLastSection(True)
-        self.tbl_compras.setRowCount(len(rows))
-        for i,row in enumerate(rows):
-            for j,val in enumerate(row):
-                self.tbl_compras.setItem(i,j,QTableWidgetItem(str(val)))
+        rows = run_select(sql, params)
+        self.tbl_precos.setColumnCount(5)
+        self.tbl_precos.setHorizontalHeaderLabels(["ID","Peça","Fornecedor","Preço","Data Cotação"])
+        self.tbl_precos.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.tbl_precos.setItem(i,0,QTableWidgetItem(str(r['id_peca_fornecedor'])))
+            self.tbl_precos.setItem(i,1,QTableWidgetItem(r['peca'])); self.tbl_precos.setItem(i,2,QTableWidgetItem(r['fornecedor']))
+            self.tbl_precos.setItem(i,3,QTableWidgetItem(str(r['preco_unitario']))); self.tbl_precos.setItem(i,4,QTableWidgetItem(str(r['data_cotacao'])))
+        header = self.tbl_precos.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
-    def filter_compras(self):
-        self.load_compras(self.filtro_compra.text().strip())
-
-    def add_compra(self):
-        # need to show combo boxes for pieces and suppliers
-        pcs = self.run_select("SELECT id, nome FROM pecas")
-        fns = self.run_select("SELECT id, nome FROM fornecedor")
-        if not pcs or not fns:
-            QMessageBox.warning(self,"Dados faltando","Cadastre peças e fornecedores antes de registrar compras.")
-            return
-        # build fields: id_peca (combo), id_fornecedor (combo), quantidade (int), valor_unitario (line)
-        fields = [
-            ("id_peca","combo",[(nome,id_) for id_,nome in pcs]),
-            ("id_fornecedor","combo",[(nome,id_) for id_,nome in fns]),
-            ("quantidade","int",None),
-            ("valor_unitario","line",None)
-        ]
-        dlg = RecordDialog("Registrar Compra", fields, parent=self)
+    def add_preco(self):
+        pecas = run_select("SELECT id_peca, nome FROM pecas ORDER BY nome")
+        fns = run_select("SELECT id_fornecedor, nome FROM fornecedores ORDER BY nome")
+        if not pecas or not fns: QMessageBox.warning(self, "Dados", "Cadastre peças e fornecedores antes."); return
+        fields = [("id_peca","combo",[(p['nome'], p['id_peca']) for p in pecas]), ("id_fornecedor","combo",[(f['nome'], f['id_fornecedor']) for f in fns]), ("preco_unitario","line",None), ("data_cotacao","date",None)]
+        dlg = RecordDialog("Nova Cotação", fields, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                id_peca = data['id_peca']; id_fornecedor = data['id_fornecedor']
-                quantidade = int(data['quantidade']); preco = float(data['valor_unitario'])
-                # insert into compra
-                self.run_commit("INSERT INTO compra (id_peca, id_fornecedor, data_compra, quantidade, valor_unitario) VALUES (%s,%s,%s,%s,%s)",
-                                (id_peca, id_fornecedor, date.today(), quantidade, preco))
-                # update estoque (insert or update)
-                r = self.run_select("SELECT quantidade FROM estoque WHERE id_peca=%s", (id_peca,))
-                if r:
-                    self.run_commit("UPDATE estoque SET quantidade = quantidade + %s WHERE id_peca = %s", (quantidade, id_peca))
-                else:
-                    self.run_commit("INSERT INTO estoque (id_peca, quantidade) VALUES (%s, %s)", (id_peca, quantidade))
-                # upsert peca_fornecedor price
-                r2 = self.run_select("SELECT id FROM peca_fornecedor WHERE id_peca=%s AND id_fornecedor=%s", (id_peca, id_fornecedor))
-                if r2:
-                    self.run_commit("UPDATE peca_fornecedor SET preco=%s WHERE id_peca=%s AND id_fornecedor=%s", (preco, id_peca, id_fornecedor))
-                else:
-                    self.run_commit("INSERT INTO peca_fornecedor (id_peca, id_fornecedor, preco) VALUES (%s,%s,%s)", (id_peca, id_fornecedor, preco))
-                QMessageBox.information(self,"OK","Compra registrada e estoque atualizado.")
-                self.load_compras()
-                self.load_estoque()
+                run_commit("INSERT INTO pecas_fornecedores (id_peca, id_fornecedor, preco_unitario, data_cotacao) VALUES (%s,%s,%s,%s)",
+                           (data['id_peca'], data['id_fornecedor'], float(data['preco_unitario'].replace(',','.')) if data['preco_unitario'] else 0.0, data['data_cotacao']))
+                QMessageBox.information(self, "OK", "Cotação registrada."); self.load_precos()
             except Exception as e:
-                self.show_error(f"Erro ao registrar compra: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    def edit_compra(self):
-        row = self.tbl_compras.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione uma compra para editar.")
-            return
-        # For simplicity, editing purchases is limited here (could be expanded)
-        QMessageBox.information(self,"Info","Editar compra: recurso a implementar com regras de ajuste de estoque.")
-
-    def delete_compra(self):
-        row = self.tbl_compras.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione uma compra para excluir.")
-            return
-        id_ = int(self.tbl_compras.item(row,0).text())
-        if QMessageBox.question(self,"Confirmar","Excluir compra? (não reverte automaticamente estoque)") == QMessageBox.Yes:
+    def del_preco(self):
+        row = self.tbl_precos.currentRow()
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma cotação."); return
+        id_ = int(self.tbl_precos.item(row,0).text())
+        if QMessageBox.question(self, "Confirmar", "Excluir cotação?")==QMessageBox.Yes:
             try:
-                self.run_commit("DELETE FROM compra WHERE id=%s", (id_,))
-                QMessageBox.information(self,"OK","Compra excluída.")
-                self.load_compras(); self.load_estoque()
+                run_commit("DELETE FROM pecas_fornecedores WHERE id_peca_fornecedor=%s", (id_,)); QMessageBox.information(self, "OK", "Cotação excluída."); self.load_precos()
             except Exception as e:
-                self.show_error(f"Erro ao excluir compra: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    # ------- Manutencoes Tab -------
-    def init_manutencoes_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        # 🔎 Barra de filtro
-        filtros_layout = QHBoxLayout()
-        self.filtro_manut = QLineEdit()
-        self.filtro_manut.setPlaceholderText("Pesquisar manutenções por descrição/peça...")
-        btn_filtrar = QPushButton("Filtrar")
-        btn_filtrar.clicked.connect(self.filter_manutencoes)
-        filtros_layout.addWidget(self.filtro_manut)
-        filtros_layout.addWidget(btn_filtrar)
-        layout.addLayout(filtros_layout)
-
-        # 🔎 Tabela de manutenções
-        self.tbl_manut = QTableWidget()
-        layout.addWidget(self.tbl_manut)
-
-        # 🔎 Botões
-        botoes_layout = QHBoxLayout()
-
-        btn_add = QPushButton("Registrar Manutenção")
-        btn_edit = QPushButton("Editar")
-        btn_del = QPushButton("Excluir")
-        btn_relatorio = QPushButton("Gerar Relatório")
-
-        btn_add.clicked.connect(self.add_manutencao)
-        btn_edit.clicked.connect(self.edit_manutencao)
-        btn_del.clicked.connect(self.delete_manutencao)
-        btn_relatorio.clicked.connect(self.gerar_relatorio_manutencao)
-
-        botoes_layout.addWidget(btn_add)
-        botoes_layout.addWidget(btn_edit)
-        botoes_layout.addWidget(btn_del)
-        botoes_layout.addWidget(btn_relatorio)
-
-        layout.addLayout(botoes_layout)
-
-        self.tabs.addTab(tab, "Manutenções")
-        self.load_manutencoes()
-
-    def criar_pdf_manutencao(self, dados):
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib import colors
-        from reportlab.lib.styles import getSampleStyleSheet
-
-        nome_arquivo = f"relatorio_manutencao_{dados['placa']}_{dados['id']}.pdf"
-        doc = SimpleDocTemplate(nome_arquivo, pagesize=A4)
-        estilo = getSampleStyleSheet()
-        elementos = []
-
-        # Cabeçalho
-        elementos.append(Paragraph("Relatório de Manutenção", estilo['Title']))
-
-        # Veículo
-        tabela_veiculo = Table([
-            ["Placa:", dados['placa'], "Modelo:", dados['modelo']],
-            ["Ano:", str(dados['ano']), "KM:", str(dados['km'])]
-        ])
-        tabela_veiculo.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
-        elementos.append(tabela_veiculo)
-
-        # Manutenção
-        tabela_manut = Table([
-            ["Data Início:", str(dados['data_inicio']), "Data Fim:", str(dados['data_fim'])],
-            ["Responsável:", dados['responsavel'], "Peça Usada:", dados['peca']],
-            ["Quantidade:", str(dados['quantidade']), "", ""]
-        ])
-        tabela_manut.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.black)]))
-        elementos.append(tabela_manut)
-
-        doc.build(elementos)
-        return nome_arquivo
-
-
-    def gerar_relatorio_manutencao(self):
-        selected = self.tbl_manut.currentRow()
-        if selected < 0:
-            QMessageBox.warning(self, "Erro", "Selecione uma manutenção para gerar o relatório.")
-            return
-
-        manutencao_id = int(self.tbl_manut.item(selected, 0).text())
-
-        sql = """
-                SELECT m.id, v.placa, v.modelo, v.ano_fabricacao, v.km,
-                    m.data_manutencao_inicio, m.data_manutencao_fim,
-                    p.nome, m.quantidade_peca_usada
-                FROM manutencao m
-                JOIN veiculos v ON m.veiculo_usado = v.id
-                LEFT JOIN pecas p ON m.peca_usada_id = p.id
-                WHERE m.id = %s
-            """
-        row = self.run_select(sql, (manutencao_id,))
-        if not row:
-            QMessageBox.warning(self, "Erro", "Não foi possível encontrar os dados da manutenção.")
-            return
-
-        dados = {
-            "id": row[0][0],
-            "placa": row[0][1],
-            "modelo": row[0][2],
-            "ano": row[0][3],
-            "km": row[0][4],
-            "data_inicio": row[0][5],
-            "data_fim": row[0][6],
-            "peca": row[0][8] if row[0][8] else "—",
-            "quantidade": row[0][9] if row[0][9] else 0
-        }
-
-        arquivo = self.criar_pdf_manutencao(dados)
-        QMessageBox.information(self, "Relatório", f"Relatório salvo em:\n{arquivo}")
-
-    def load_manutencoes(self):
-        sql = """
-            SELECT m.id, v.placa, p.nome, m.quantidade_peca_usada,
-                m.data_manutencao_inicio, m.data_manutencao_fim
-            FROM manutencao m
-            JOIN veiculos v ON m.veiculo_usado = v.id
-            LEFT JOIN pecas p ON m.peca_usada_id = p.id
-            ORDER BY m.data_manutencao_inicio DESC
-        """
-        rows = self.run_select(sql)
-
-        self.tbl_manut.setRowCount(len(rows))
-        self.tbl_manut.setColumnCount(len(rows[0]) if rows else 0)
-
-        headers = ["ID", "Placa", "Peça", "Qtd Usada",
-                "Data Início", "Data Fim"]
-        self.tbl_manut.setHorizontalHeaderLabels(headers)
-
-        for i, row in enumerate(rows):
-            for j, val in enumerate(row):
-                self.tbl_manut.setItem(i, j, QTableWidgetItem(str(val)))
-
-
-    def filter_manutencoes(self):
-        self.load_manutencoes(self.filtro_manut.text().strip())
-
-    def add_manutencao(self):
-        pcs = self.run_select("SELECT id, nome FROM pecas")
-        vcl = self.run_select("SELECT id, placa FROM veiculos")
-        if not pcs or not vcl:
-            QMessageBox.warning(self,"Dados faltando","Cadastre peças e veículos antes de registrar manutenção.")
-            return
-        fields = [
-            ("peca_usada_id","combo",[(nome,id_) for id_,nome in pcs]),
-            ("quantidade_peca_usada","int",None),
-            ("tipo_manutencao","line",None),
-            ("data_manutencao_inicio","date",None),
-            ("data_manutencao_fim","date",None),
-            ("descricao","line",None),
-            ("veiculo_usado","combo",[(placa,id_) for id_,placa in vcl])
-        ]
-        dlg = RecordDialog("Registrar Manutenção", fields, parent=self)
-        if dlg.exec_():
-            data = dlg.get_data()
-            try:
-                id_peca = data['peca_usada_id']; qtd = int(data['quantidade_peca_usada'])
-                tipo = data['tipo_manutencao']; din = data['data_manutencao_inicio']; dfim = data['data_manutencao_fim']
-                desc = data['descricao']; veic = data['veiculo_usado']
-                # check stock
-                r = self.run_select("SELECT quantidade FROM estoque WHERE id_peca=%s", (id_peca,))
-                if not r or r[0][0] < qtd:
-                    QMessageBox.warning(self,"Estoque","Quantidade insuficiente em estoque para esta peça.")
-                    return
-                # insert manutencao
-                self.run_commit("INSERT INTO manutencao (peca_usada_id, quantidade_peca_usada, tipo_manutencao, data_manutencao_inicio, data_manutencao_fim, descricao, veiculo_usado) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                                (id_peca, qtd, tipo, din, dfim, desc, veic))
-                # decrease stock
-                self.run_commit("UPDATE estoque SET quantidade = quantidade - %s WHERE id_peca=%s", (qtd, id_peca))
-                QMessageBox.information(self,"OK","Manutenção registrada e estoque atualizado.")
-                self.load_manutencoes(); self.load_estoque()
-            except Exception as e:
-                self.show_error(f"Erro ao registrar manutenção: {e}")
-
-    def edit_manutencao(self):
-        QMessageBox.information(self,"Info","Editar manutenção: recurso a implementar com cuidado (ajuste de estoque).")
-
-    def delete_manutencao(self):
-        row = self.tbl_manut.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione uma manutenção.")
-            return
-        id_ = int(self.tbl_manut.item(row,0).text())
-        if QMessageBox.question(self,"Confirmar","Excluir manutenção? (não fará ajuste de estoque automaticamente)")==QMessageBox.Yes:
-            try:
-                self.run_commit("DELETE FROM manutencao WHERE id=%s",(id_,))
-                QMessageBox.information(self,"OK","Manutenção excluída.")
-                self.load_manutencoes(); self.load_estoque()
-            except Exception as e:
-                self.show_error(f"Erro ao excluir manut.: {e}")
-
-    # ------- Estoque Tab -------
+    # ------- Estoque -------
     def init_estoque_tab(self):
-        tab = QWidget(); layout = QVBoxLayout(tab)
-        h = QHBoxLayout()
-        self.filtro_estoque = QLineEdit(); self.filtro_estoque.setPlaceholderText("Pesquisar por peça...")
-        btn = QPushButton("Filtrar"); btn.clicked.connect(self.filter_estoque)
-        h.addWidget(self.filtro_estoque); h.addWidget(btn); layout.addLayout(h)
-
+        layout = QVBoxLayout(self.tab_estoque)
+        h = QHBoxLayout(); self.filtro_estoque = QLineEdit(); self.filtro_estoque.setPlaceholderText("Pesquisar peça..."); btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_estoque); h.addWidget(self.filtro_estoque); h.addWidget(btn); layout.addLayout(h)
         self.tbl_estoque = QTableWidget(); layout.addWidget(self.tbl_estoque)
-        bl = QHBoxLayout()
-        btn_refresh = QPushButton("Atualizar"); btn_refresh.clicked.connect(self.load_estoque)
-        btn_adjust = QPushButton("Ajustar Estoque")
-        btn_del = QPushButton("Excluir do Estoque")
-        btn_del.clicked.connect(self.delete_from_estoque)
-        bl.addWidget(btn_del)
-        btn_adjust.clicked.connect(self.adjust_estoque)
-        bl.addWidget(btn_refresh); bl.addWidget(btn_adjust)
-        layout.addLayout(bl)
-        self.tabs.addTab(tab, "Estoque")
+        bl = QHBoxLayout(); btn_refresh = QPushButton("Atualizar"); btn_refresh.clicked.connect(self.load_estoque); btn_adj = QPushButton("Ajustar"); btn_adj.clicked.connect(self.adjust_estoque); btn_del = QPushButton("Remover do estoque"); btn_del.clicked.connect(self.remove_from_estoque); bl.addWidget(btn_refresh); bl.addWidget(btn_adj); bl.addWidget(btn_del); bl.addStretch(); layout.addLayout(bl)
         self.load_estoque()
 
-    def load_estoque(self, filtro=None):
-        sql = """SELECT e.id_peca, p.nome, e.quantidade, p.estoque_minimo
-                FROM estoque e 
-                JOIN pecas p ON e.id_peca = p.id"""
+    def load_estoque(self):
+        filtro = self.filtro_estoque.text().strip()
+        sql = """SELECT e.id_estoque, p.nome, e.quantidade_atual, e.quantidade_minima
+                 FROM estoque e JOIN pecas p ON e.id_peca = p.id_peca"""
         params = ()
         if filtro:
             sql += " WHERE p.nome LIKE %s"
             params = (f"%{filtro}%",)
-        rows = self.run_select(sql, params)
-        self.tbl_estoque.setColumnCount(4)
-        self.tbl_estoque.setHorizontalHeaderLabels(["ID Peça","Nome","Quantidade","Mínimo"])
-        header = self.tbl_estoque.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-        header.setStretchLastSection(True)
-        self.tbl_estoque.setRowCount(len(rows))
-
+        rows = run_select(sql, params)
+        self.tbl_estoque.setColumnCount(4); self.tbl_estoque.setHorizontalHeaderLabels(["ID Estoque","Peça","Qtd Atual","Qtd Mínima"]); self.tbl_estoque.setRowCount(len(rows))
         alerta = []
-        for i,row in enumerate(rows):
-            for j,val in enumerate(row):
-                self.tbl_estoque.setItem(i,j,QTableWidgetItem(str(val)))
-            # 🔹 verifica alerta
-            if row[2] < row[3]:  
-                alerta.append(f"{row[1]} (Qtd: {row[2]}, Mín: {row[3]})")
-
-        if alerta:
-            QMessageBox.warning(self, "Estoque Baixo",
-                                "As seguintes peças estão abaixo do mínimo:\n" + "\n".join(alerta))
-
-    def filter_estoque(self):
-        self.load_estoque(self.filtro_estoque.text().strip())
+        for i, r in enumerate(rows):
+            self.tbl_estoque.setItem(i,0,QTableWidgetItem(str(r['id_estoque'])))
+            self.tbl_estoque.setItem(i,1,QTableWidgetItem(r['nome'])); self.tbl_estoque.setItem(i,2,QTableWidgetItem(str(r['quantidade_atual']))); self.tbl_estoque.setItem(i,3,QTableWidgetItem(str(r['quantidade_minima'])))
+            if float(r['quantidade_atual']) < float(r['quantidade_minima']): alerta.append(f"{r['nome']} (Qt: {r['quantidade_atual']}, Mín: {r['quantidade_minima']})")
+        header = self.tbl_estoque.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
+        if alerta: QMessageBox.warning(self, "Estoque baixo", "Peças abaixo do mínimo:\n" + "\n".join(alerta))
 
     def adjust_estoque(self):
-        # allow user to adjust a selected piece quantity (positive or negative)
-        row = self.tbl_estoque.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione um item do estoque.")
-            return
-        id_peca = int(self.tbl_estoque.item(row,0).text())
-        current = int(self.tbl_estoque.item(row,2).text())
+        row = self.tbl_estoque.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um item do estoque."); return
+        id_est = int(self.tbl_estoque.item(row,0).text())
+        current = float(self.tbl_estoque.item(row,2).text())
         fields = [("nova_quantidade","int",None)]
-        dlg = RecordDialog("Ajustar Estoque", fields, values={"nova_quantidade": current}, parent=self)
+        dlg = RecordDialog("Ajustar Estoque", fields, values={"nova_quantidade": int(current)}, parent=self)
         if dlg.exec_():
             new_q = dlg.get_data()['nova_quantidade']
             try:
-                self.run_commit("UPDATE estoque SET quantidade=%s WHERE id_peca=%s", (new_q, id_peca))
-                QMessageBox.information(self,"OK","Estoque ajustado.")
-                self.load_estoque()
+                run_commit("UPDATE estoque SET quantidade_atual = %s WHERE id_estoque = %s", (new_q, id_est))
+                QMessageBox.information(self, "OK", "Estoque ajustado."); self.load_estoque()
             except Exception as e:
-                self.show_error(f"Erro ao ajustar estoque: {e}")
-    def delete_from_estoque(self):
-        row = self.tbl_estoque.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione uma peça do estoque para excluir.")
-            return
-        
-        id_peca = int(self.tbl_estoque.item(row,0).text())
-        nome_peca = self.tbl_estoque.item(row,1).text()
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-        if QMessageBox.question(
-            self,
-            "Confirmar Exclusão",
-            f"Tem certeza que deseja excluir a peça '{nome_peca}' do estoque?"
-        ) == QMessageBox.Yes:
+    def remove_from_estoque(self):
+        row = self.tbl_estoque.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um item do estoque."); return
+        id_est = int(self.tbl_estoque.item(row,0).text()); nome = self.tbl_estoque.item(row,1).text()
+        if QMessageBox.question(self, "Confirmar", f"Remover {nome} do estoque?")==QMessageBox.Yes:
             try:
-                self.run_commit("DELETE FROM estoque WHERE id_peca=%s",(id_peca,))
-                QMessageBox.information(self,"OK","Peça removida do estoque.")
-                self.load_estoque()
+                run_commit("DELETE FROM estoque WHERE id_estoque = %s", (id_est,)); QMessageBox.information(self, "OK", "Removido."); self.load_estoque()
             except Exception as e:
-                self.show_error(f"Erro ao excluir do estoque: {e}")    
-    def init_relatorios_tab(self):
-        self.tab_relatorios = QWidget()
-        layout = QVBoxLayout(self.tab_relatorios)
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-        filtros_layout = QHBoxLayout()
+    # ------- Compras Tab -------
+    def init_compras_tab(self):
+        layout = QVBoxLayout(self.tab_compras)
+        h = QHBoxLayout(); self.filtro_compras = QLineEdit(); self.filtro_compras.setPlaceholderText("Pesquisar compras por fornecedor..."); btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_compras); h.addWidget(self.filtro_compras); h.addWidget(btn); layout.addLayout(h)
+        self.tbl_compras = QTableWidget(); layout.addWidget(self.tbl_compras)
+        bl = QHBoxLayout(); btn_add = QPushButton("Registrar Compra"); btn_add.clicked.connect(self.open_compra_dialog); btn_del = QPushButton("Excluir Compra"); btn_del.clicked.connect(self.del_compra); bl.addWidget(btn_add); bl.addWidget(btn_del); bl.addStretch(); layout.addLayout(bl)
+        self.load_compras()
 
-        self.combo_tipo_relatorio = QComboBox()
-        self.combo_tipo_relatorio.addItems([
-            "Orçamento de peças por fornecedor",
-            "Saída de peças do estoque por período"
-        ])
-        filtros_layout.addWidget(QLabel("Tipo de Relatório:"))
-        filtros_layout.addWidget(self.combo_tipo_relatorio)
-
-        self.combo_fornecedor_rel = QComboBox()
-        self.load_fornecedores_rel()
-        filtros_layout.addWidget(QLabel("Fornecedor:"))
-        filtros_layout.addWidget(self.combo_fornecedor_rel)
-
-        self.data_inicio_rel = QDateEdit()
-        self.data_inicio_rel.setCalendarPopup(True)
-        self.data_inicio_rel.setDate(QDate.currentDate().addMonths(-1))
-        filtros_layout.addWidget(QLabel("Data Início:"))
-        filtros_layout.addWidget(self.data_inicio_rel)
-
-        self.data_fim_rel = QDateEdit()
-        self.data_fim_rel.setCalendarPopup(True)
-        self.data_fim_rel.setDate(QDate.currentDate())
-        filtros_layout.addWidget(QLabel("Data Fim:"))
-        filtros_layout.addWidget(self.data_fim_rel)
-
-        btn_gerar = QPushButton("Gerar Relatório")
-        btn_gerar.clicked.connect(self.gerar_relatorio)
-        filtros_layout.addWidget(btn_gerar)
-
-        layout.addLayout(filtros_layout)
-
-        self.table_relatorios = QTableWidget()
-        layout.addWidget(self.table_relatorios)
-
-        export_layout = QHBoxLayout()
-        btn_excel = QPushButton("Exportar para Excel")
-        btn_excel.clicked.connect(self.exportar_excel)
-        export_layout.addWidget(btn_excel)
-
-        btn_pdf = QPushButton("Exportar para PDF")
-        btn_pdf.clicked.connect(self.exportar_pdf)
-        export_layout.addWidget(btn_pdf)
-
-        layout.addLayout(export_layout)
-
-        self.tabs.addTab(self.tab_relatorios, "Relatórios")
-
-    def load_fornecedores_rel(self):
-        self.combo_fornecedor_rel.clear()
-        fornecedores = self.run_select("SELECT id, nome FROM fornecedor")
-        for f in fornecedores:
-            self.combo_fornecedor_rel.addItem(f[1], f[0])
-
-    def gerar_relatorio(self):
-        self.load_fornecedores_rel()  # garante que a lista está atualizada
-        tipo = self.combo_tipo_relatorio.currentText()
-        data_inicio = self.data_inicio_rel.date().toString("yyyy-MM-dd")
-        data_fim = self.data_fim_rel.date().toString("yyyy-MM-dd")
-
-        if tipo == "Orçamento de peças por fornecedor":
-            fornecedor_id = self.combo_fornecedor_rel.currentData()
-            sql = """
-                SELECT f.nome, p.nome, c.quantidade, c.valor_unitario, 
-                    (c.quantidade * c.valor_unitario) AS total, c.data_compra
-                FROM compra c
-                JOIN pecas p ON c.id_peca = p.id
-                JOIN fornecedor f ON c.id_fornecedor = f.id
-                WHERE f.id = %s AND c.data_compra BETWEEN %s AND %s
-                ORDER BY c.data_compra DESC
-            """
-            params = (fornecedor_id, data_inicio, data_fim)
-
-        elif tipo == "Saída de peças do estoque por período":
-            sql = """
-                SELECT p.nome, m.quantidade_peca_usada, m.data_manutencao_inicio, v.placa
-                FROM manutencao m
-                JOIN pecas p ON m.peca_usada_id = p.id
-                JOIN veiculos v ON m.veiculo_usado = v.id
-                WHERE m.data_manutencao_inicio BETWEEN %s AND %s
-                ORDER BY m.data_manutencao_inicio DESC
-            """
-            params = (data_inicio, data_fim)
-
-        else:
-            QMessageBox.warning(self, "Erro", "Tipo de relatório inválido!")
-            return
-
-        rows = self.run_select(sql, params)
-
-        if rows:
-            self.table_relatorios.setRowCount(len(rows))
-            self.table_relatorios.setColumnCount(len(rows[0]))
-            self.table_relatorios.setHorizontalHeaderLabels([desc[0] for desc in self.cursor.description])
-            header = self.table_relatorios.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-            header.setStretchLastSection(True)
-            for i, row in enumerate(rows):
-                for j, val in enumerate(row):
-                    self.table_relatorios.setItem(i, j, QTableWidgetItem(str(val)))
-        else:
-            self.table_relatorios.setRowCount(0)
-            QMessageBox.information(self, "Relatório", "Nenhum dado encontrado para os filtros selecionados.")
-
-    def exportar_excel(self):
-        if self.table_relatorios.rowCount() == 0:
-            QMessageBox.warning(self, "Erro", "Nenhum dado para exportar.")
-            return
-
-        dados = []
-        colunas = [self.table_relatorios.horizontalHeaderItem(i).text() for i in range(self.table_relatorios.columnCount())]
-        for i in range(self.table_relatorios.rowCount()):
-            linha = []
-            for j in range(self.table_relatorios.columnCount()):
-                linha.append(self.table_relatorios.item(i, j).text())
-            dados.append(linha)
-
-        df = pd.DataFrame(dados, columns=colunas)
-
-        # 🔹 abre janela para escolher onde salvar
-        nome_arquivo, _ = QFileDialog.getSaveFileName(
-            self,
-            "Salvar Relatório Excel",
-            f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-            "Arquivos Excel (*.xlsx)"
-        )
-        if not nome_arquivo:
-            return  # usuário cancelou
-
-        df.to_excel(nome_arquivo, index=False)
-        QMessageBox.information(self, "Exportação concluída", f"Arquivo salvo em:\n{nome_arquivo}")
-
-
-    def exportar_pdf(self):
-        if self.table_relatorios.rowCount() == 0:
-            QMessageBox.warning(self, "Erro", "Nenhum dado para exportar.")
-            return
-
-        dados = []
-        colunas = [self.table_relatorios.horizontalHeaderItem(i).text() for i in range(self.table_relatorios.columnCount())]
-        dados.append(colunas)
-
-        for i in range(self.table_relatorios.rowCount()):
-            linha = []
-            for j in range(self.table_relatorios.columnCount()):
-                linha.append(self.table_relatorios.item(i, j).text())
-            dados.append(linha)
-
-        # 🔹 abre janela para escolher onde salvar
-        nome_arquivo, _ = QFileDialog.getSaveFileName(
-            self,
-            "Salvar Relatório PDF",
-            f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            "Arquivos PDF (*.pdf)"
-        )
-        if not nome_arquivo:
-            return  # usuário cancelou
-
-        pdf = SimpleDocTemplate(nome_arquivo, pagesize=A4)
-        estilo = getSampleStyleSheet()
-        tabela = Table(dados)
-        tabela.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.gray),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.black),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ]))
-        elementos = [Paragraph("Relatório gerado", estilo['Title']), tabela]
-        pdf.build(elementos)
-        QMessageBox.information(self, "Exportação concluída", f"Arquivo salvo em:\n{nome_arquivo}")
-
-
-    def init_usuarios_tab(self):
-    # Apenas admins podem acessar
-        if self.current_user["tipo"] != "admin":
-            return
-        
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        # Filtro de pesquisa
-        h = QHBoxLayout()
-        self.filtro_usuario = QLineEdit()
-        self.filtro_usuario.setPlaceholderText("Pesquisar usuário (nome ou usuario)...")
-        btn_filtrar = QPushButton("Filtrar")
-        btn_filtrar.clicked.connect(self.filter_usuarios)
-        h.addWidget(self.filtro_usuario)
-        h.addWidget(btn_filtrar)
-        layout.addLayout(h)
-
-        # Tabela
-        self.tbl_usuarios = QTableWidget()
-        layout.addWidget(self.tbl_usuarios)
-
-        # Botões CRUD
-        bl = QHBoxLayout()
-        btn_add = QPushButton("Adicionar")
-        btn_edit = QPushButton("Editar")
-        btn_del = QPushButton("Excluir")
-        btn_add.clicked.connect(self.add_usuario)
-        btn_edit.clicked.connect(self.edit_usuario)
-        btn_del.clicked.connect(self.delete_usuario)
-        bl.addWidget(btn_add)
-        bl.addWidget(btn_edit)
-        bl.addWidget(btn_del)
-        layout.addLayout(bl)
-
-        self.tabs.addTab(tab, "Usuários")
-        self.load_usuarios()
-
-    def load_usuarios(self, filtro=None):
-        sql = "SELECT id, nome, usuario, tipo FROM usuarios"
+    def load_compras(self):
+        filtro = self.filtro_compras.text().strip()
+        sql = """SELECT c.id_compra, f.nome AS fornecedor, c.data_compra, c.valor_total
+                 FROM compras c JOIN fornecedores f ON c.id_fornecedor = f.id_fornecedor"""
         params = ()
         if filtro:
-            sql += " WHERE nome LIKE %s OR usuario LIKE %s"
-            params = (f"%{filtro}%", f"%{filtro}%")
-        rows = self.run_select(sql, params)
-        self.tbl_usuarios.setColumnCount(4)
-        self.tbl_usuarios.setHorizontalHeaderLabels(["ID","Nome","Usuário","Tipo"])
-        header = self.tbl_usuarios.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeToContents)  # ajusta pelo conteúdo
-        header.setStretchLastSection(True)
-        self.tbl_usuarios.setRowCount(len(rows))
-        for i, row in enumerate(rows):
-            for j, val in enumerate(row):
-                self.tbl_usuarios.setItem(i,j,QTableWidgetItem(str(val)))
+            sql += " WHERE f.nome LIKE %s"
+            params = (f"%{filtro}%",)
+        rows = run_select(sql, params)
+        self.tbl_compras.setColumnCount(4); self.tbl_compras.setHorizontalHeaderLabels(["ID","Fornecedor","Data","Valor Total"]); self.tbl_compras.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.tbl_compras.setItem(i,0,QTableWidgetItem(str(r['id_compra']))); self.tbl_compras.setItem(i,1,QTableWidgetItem(r['fornecedor'])); self.tbl_compras.setItem(i,2,QTableWidgetItem(str(r['data_compra']))); self.tbl_compras.setItem(i,3,QTableWidgetItem(str(r['valor_total'])))
+        header = self.tbl_compras.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
-    def filter_usuarios(self):
-        self.load_usuarios(self.filtro_usuario.text().strip())
+    def open_compra_dialog(self):
+        dlg = CompraDialog(self); 
+        if dlg.exec_(): self.load_compras(); self.load_estoque()
+
+    def del_compra(self):
+        row = self.tbl_compras.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma compra."); return
+        id_ = int(self.tbl_compras.item(row,0).text())
+        if QMessageBox.question(self, "Confirmar", "Excluir compra? (não reverte estoque)")==QMessageBox.Yes:
+            try:
+                run_commit("DELETE FROM compras WHERE id_compra = %s", (id_,))
+                QMessageBox.information(self, "OK", "Compra excluída."); self.load_compras(); self.load_estoque()
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
+
+    # ------- Manutenções Tab -------
+    def init_manut_tab(self):
+        layout = QVBoxLayout(self.tab_manut)
+        h = QHBoxLayout(); self.filtro_manut = QLineEdit(); self.filtro_manut.setPlaceholderText("Pesquisar..."); btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_manutencoes); h.addWidget(self.filtro_manut); h.addWidget(btn); layout.addLayout(h)
+        self.tbl_manut = QTableWidget(); layout.addWidget(self.tbl_manut)
+        bl = QHBoxLayout(); btn_add = QPushButton("Registrar Manutenção"); btn_add.clicked.connect(self.open_manut_dialog); btn_del = QPushButton("Excluir"); btn_del.clicked.connect(self.del_manut); btn_rel = QPushButton("Gerar Relatório (CSV)"); btn_rel.clicked.connect(self.export_manut_csv); bl.addWidget(btn_add); bl.addWidget(btn_del); bl.addWidget(btn_rel); bl.addStretch(); layout.addLayout(bl)
+        self.load_manutencoes()
+
+    def load_manutencoes(self):
+        filtro = self.filtro_manut.text().strip()
+        sql = """SELECT m.id_manutencao, e.placa, e.descricao AS equipamento, m.data_inicio, m.data_fim, m.tipo, m.custo_total
+                 FROM manutencoes m JOIN equipamentos e ON m.id_equipamento = e.id_equipamento ORDER BY m.data_inicio DESC"""
+        params = ()
+        if filtro:
+            sql += " WHERE e.placa LIKE %s OR e.descricao LIKE %s"
+            params = (f"%{filtro}%", f"%{filtro}%")
+        rows = run_select(sql, params)
+        self.tbl_manut.setColumnCount(7); self.tbl_manut.setHorizontalHeaderLabels(["ID","Placa","Equipamento","Início","Fim","Tipo","Custo Total"]); self.tbl_manut.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.tbl_manut.setItem(i,0,QTableWidgetItem(str(r['id_manutencao']))); self.tbl_manut.setItem(i,1,QTableWidgetItem(str(r.get('placa') or ''))); self.tbl_manut.setItem(i,2,QTableWidgetItem(str(r.get('equipamento') or '')))
+            self.tbl_manut.setItem(i,3,QTableWidgetItem(str(r.get('data_inicio') or ''))); self.tbl_manut.setItem(i,4,QTableWidgetItem(str(r.get('data_fim') or '')))
+            self.tbl_manut.setItem(i,5,QTableWidgetItem(str(r.get('tipo') or ''))); self.tbl_manut.setItem(i,6,QTableWidgetItem(str(r.get('custo_total') or '0')))
+        header = self.tbl_manut.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
+
+    def open_manut_dialog(self):
+        dlg = ManutencaoDialog(self); 
+        if dlg.exec_(): self.load_manutencoes(); self.load_estoque()
+
+    def del_manut(self):
+        row = self.tbl_manut.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma manutenção."); return
+        id_ = int(self.tbl_manut.item(row,0).text())
+        if QMessageBox.question(self, "Confirmar", "Excluir manutenção? (não reverte estoque)")==QMessageBox.Yes:
+            try:
+                run_commit("DELETE FROM manutencoes WHERE id_manutencao=%s", (id_,)); QMessageBox.information(self, "OK", "Excluído"); self.load_manutencoes(); self.load_estoque()
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
+
+    def export_manut_csv(self):
+        row = self.tbl_manut.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma manutenção."); return
+        id_ = int(self.tbl_manut.item(row,0).text())
+        rows = run_select("""SELECT mp.id_item_manutencao, p.nome, mp.quantidade_usada, mp.preco_unitario FROM manutencoes_pecas mp JOIN pecas p ON mp.id_peca = p.id_peca WHERE mp.id_manutencao = %s""", (id_,))
+        if not rows: QMessageBox.information(self, "Relatório", "Nenhuma peça nesta manutenção."); return
+        path, _ = QFileDialog.getSaveFileName(self, "Salvar CSV", f"manut_{id_}.csv", "CSV (*.csv)")
+        if not path: return
+        with open(path, "w", newline='', encoding='utf-8') as f:
+            w = csv.writer(f, delimiter=';'); w.writerow(["Peça","Qtd","Preço Unit.","Total"])
+            for r in rows:
+                w.writerow([r['nome'], r['quantidade_usada'], float(r['preco_unitario']), float(r['quantidade_usada'])*float(r['preco_unitario'])])
+        QMessageBox.information(self, "Exportado", f"CSV salvo em: {path}")
+
+    # ------- Orçamentador -------
+    def init_orc_tab(self):
+        layout = QVBoxLayout(self.tab_orc)
+        hl = QHBoxLayout(); btn = QPushButton("Abrir Orçamentador"); btn.clicked.connect(self.open_orc_dialog); hl.addStretch(); hl.addWidget(btn); layout.addLayout(hl)
+
+    def open_orc_dialog(self):
+        dlg = OrcamentoDialog(self); dlg.exec_()
+
+    # ------- Import -------
+    def init_import_tab(self):
+        layout = QVBoxLayout(self.tab_import)
+        btn = QPushButton("Importar Excel"); btn.clicked.connect(self.open_import_dialog)
+        layout.addWidget(btn)
+
+    def open_import_dialog(self):
+        dlg = ImportDialog(self); dlg.exec_()
+
+    # ------- Usuarios -------
+    def init_usuarios_tab(self):
+        layout = QVBoxLayout(self.tab_usuarios)
+        h = QHBoxLayout(); self.filtro_usuario = QLineEdit(); self.filtro_usuario.setPlaceholderText("Pesquisar..."); btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_usuarios); h.addWidget(self.filtro_usuario); h.addWidget(btn); layout.addLayout(h)
+        self.tbl_usuarios = QTableWidget(); layout.addWidget(self.tbl_usuarios)
+        bl = QHBoxLayout(); btn_add = QPushButton("Adicionar"); btn_add.clicked.connect(self.add_usuario); btn_edit = QPushButton("Editar"); btn_edit.clicked.connect(self.edit_usuario); btn_del = QPushButton("Excluir"); btn_del.clicked.connect(self.del_usuario); bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del); bl.addStretch(); layout.addLayout(bl)
+        self.load_usuarios()
+
+    def load_usuarios(self):
+        filtro = self.filtro_usuario.text().strip()
+        sql = "SELECT id_usuario, nome, email, perfil, status FROM usuarios"
+        params = ()
+        if filtro:
+            sql += " WHERE nome LIKE %s OR email LIKE %s"
+            params = (f"%{filtro}%", f"%{filtro}%")
+        rows = run_select(sql, params)
+        self.tbl_usuarios.setColumnCount(5); self.tbl_usuarios.setHorizontalHeaderLabels(["ID","Nome","Email","Perfil","Status"]); self.tbl_usuarios.setRowCount(len(rows))
+        for i,r in enumerate(rows):
+            self.tbl_usuarios.setItem(i,0,QTableWidgetItem(str(r['id_usuario']))); self.tbl_usuarios.setItem(i,1,QTableWidgetItem(r['nome'])); self.tbl_usuarios.setItem(i,2,QTableWidgetItem(str(r.get('email') or ''))); self.tbl_usuarios.setItem(i,3,QTableWidgetItem(str(r.get('perfil') or ''))); self.tbl_usuarios.setItem(i,4,QTableWidgetItem(str(r.get('status') or '')))
+        header = self.tbl_usuarios.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
     def add_usuario(self):
-        fields = [
-            ("nome","line",None),
-            ("usuario","line",None),
-            ("senha","line",None),
-            ("tipo","combo",[("Administrador","admin"),("Comum","comum")])
-        ]
+        fields = [("nome","line",None),("email","line",None),("senha","line",None),("perfil","combo",[("Administrador","admin"),("Mecânico","mecanico"),("Gestor","gestor")])]
         dlg = RecordDialog("Novo Usuário", fields, parent=self)
         if dlg.exec_():
-            data = dlg.get_data()
-            senha_hash = hashlib.sha256(data['senha'].encode()).hexdigest()
+            data = dlg.get_data(); senha_hash = hashlib.sha256(data['senha'].encode()).hexdigest() if data['senha'] else None
             try:
-                self.run_commit("INSERT INTO usuarios (nome, usuario, senha, tipo) VALUES (%s,%s,%s,%s)",
-                                (data['nome'], data['usuario'], senha_hash, data['tipo']))
-                QMessageBox.information(self,"OK","Usuário criado.")
-                self.load_usuarios()
+                run_commit("INSERT INTO usuarios (nome, email, senha_hash, perfil, status) VALUES (%s,%s,%s,%s,%s)",
+                           (data['nome'], data['email'], senha_hash, data['perfil'], 'ativo'))
+                QMessageBox.information(self, "OK", "Usuário criado."); self.load_usuarios()
             except Exception as e:
-                self.show_error(f"Erro ao criar usuário: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
     def edit_usuario(self):
-        row = self.tbl_usuarios.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione um usuário para editar.")
-            return
-        id_ = int(self.tbl_usuarios.item(row,0).text())
-        vals = {
-            "nome": self.tbl_usuarios.item(row,1).text(),
-            "usuario": self.tbl_usuarios.item(row,2).text(),
-            "tipo": self.tbl_usuarios.item(row,3).text()
-        }
-        fields = [
-            ("nome","line",None),
-            ("usuario","line",None),
-            ("senha","line",None),  # opcional: se vazio, mantém a atual
-            ("tipo","combo",[("Administrador","admin"),("Comum","comum")])
-        ]
+        row = self.tbl_usuarios.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um usuário."); return
+        id_ = int(self.tbl_usuarios.item(row,0).text()); vals = {"nome": self.tbl_usuarios.item(row,1).text(), "email": self.tbl_usuarios.item(row,2).text(), "perfil": self.tbl_usuarios.item(row,3).text()}
+        fields = [("nome","line",None),("email","line",None),("senha","line",None),("perfil","combo",[("Administrador","admin"),("Mecânico","mecanico"),("Gestor","gestor")])]
         dlg = RecordDialog("Editar Usuário", fields, values=vals, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
-            sql = "UPDATE usuarios SET nome=%s, usuario=%s, tipo=%s"
-            params = [data['nome'], data['usuario'], data['tipo']]
-            if data['senha']:
-                senha_hash = hashlib.sha256(data['senha'].encode()).hexdigest()
-                sql += ", senha=%s"
-                params.append(senha_hash)
-            sql += " WHERE id=%s"
-            params.append(id_)
             try:
-                self.run_commit(sql, tuple(params))
-                QMessageBox.information(self,"OK","Usuário atualizado.")
-                self.load_usuarios()
+                params = [data['nome'], data['email'], data['perfil']]
+                sql = "UPDATE usuarios SET nome=%s, email=%s, perfil=%s"
+                if data['senha']:
+                    senha_hash = hashlib.sha256(data['senha'].encode()).hexdigest()
+                    sql += ", senha_hash=%s"; params.append(senha_hash)
+                sql += " WHERE id_usuario=%s"; params.append(id_)
+                run_commit(sql, tuple(params)); QMessageBox.information(self, "OK", "Usuário atualizado."); self.load_usuarios()
             except Exception as e:
-                self.show_error(f"Erro ao atualizar usuário: {e}")
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-    def delete_usuario(self):
-        row = self.tbl_usuarios.currentRow()
-        if row < 0:
-            QMessageBox.warning(self,"Seleção","Selecione um usuário para excluir.")
-            return
+    def del_usuario(self):
+        row = self.tbl_usuarios.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um usuário."); return
         id_ = int(self.tbl_usuarios.item(row,0).text())
-        if QMessageBox.question(self,"Confirmar","Excluir usuário?")==QMessageBox.Yes:
+        if QMessageBox.question(self, "Confirmar", "Excluir usuário?")==QMessageBox.Yes:
             try:
-                self.run_commit("DELETE FROM usuarios WHERE id=%s",(id_,))
-                QMessageBox.information(self,"OK","Usuário excluído.")
-                self.load_usuarios()
+                run_commit("DELETE FROM usuarios WHERE id_usuario=%s", (id_,)); QMessageBox.information(self, "OK", "Excluído"); self.load_usuarios()
             except Exception as e:
-                self.show_error(f"Erro ao excluir usuário: {e}")
-    # ------- on close -------
-    def closeEvent(self, event):
-        try:
-            self.conn.close()
-        except:
-            pass
-        event.accept()
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
-if __name__ == "__main__":
+    # ------- Equipamentos -------
+    def init_equip_tab(self):
+        layout = QVBoxLayout(self.tab_equip)
+        h = QHBoxLayout(); self.filtro_equip = QLineEdit(); self.filtro_equip.setPlaceholderText("Pesquisar..."); btn = QPushButton("Filtrar"); btn.clicked.connect(self.load_equipamentos); h.addWidget(self.filtro_equip); h.addWidget(btn); layout.addLayout(h)
+        self.tbl_equip = QTableWidget(); layout.addWidget(self.tbl_equip)
+        bl = QHBoxLayout(); btn_add = QPushButton("Adicionar"); btn_add.clicked.connect(self.add_equip); btn_edit = QPushButton("Editar"); btn_edit.clicked.connect(self.edit_equip); btn_del = QPushButton("Excluir"); btn_del.clicked.connect(self.del_equip); bl.addWidget(btn_add); bl.addWidget(btn_edit); bl.addWidget(btn_del); bl.addStretch(); layout.addLayout(bl)
+        self.load_equipamentos()
+
+    def load_equipamentos(self):
+        filtro = self.filtro_equip.text().strip()
+        sql = "SELECT id_equipamento, placa, descricao, modelo, ano, chassi, status FROM equipamentos"
+        params = ()
+        if filtro:
+            sql += " WHERE placa LIKE %s OR descricao LIKE %s"
+            params = (f"%{filtro}%", f"%{filtro}%")
+        rows = run_select(sql, params)
+        self.tbl_equip.setColumnCount(7); self.tbl_equip.setHorizontalHeaderLabels(["ID","Placa","Descrição","Modelo","Ano","Chassi","Status"]); self.tbl_equip.setRowCount(len(rows))
+        for i,r in enumerate(rows):
+            self.tbl_equip.setItem(i,0,QTableWidgetItem(str(r['id_equipamento']))); self.tbl_equip.setItem(i,1,QTableWidgetItem(str(r.get('placa') or ''))); self.tbl_equip.setItem(i,2,QTableWidgetItem(str(r.get('descricao') or '')))
+            self.tbl_equip.setItem(i,3,QTableWidgetItem(str(r.get('modelo') or ''))); self.tbl_equip.setItem(i,4,QTableWidgetItem(str(r.get('ano') or ''))); self.tbl_equip.setItem(i,5,QTableWidgetItem(str(r.get('chassi') or ''))); self.tbl_equip.setItem(i,6,QTableWidgetItem(str(r.get('status') or '')))
+        header = self.tbl_equip.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
+
+    def add_equip(self):
+        fields = [("placa","line",None),("descricao","line",None),("modelo","line",None),("ano","int",None),("chassi","line",None)]
+        dlg = RecordDialog("Novo Equipamento", fields, parent=self)
+        if dlg.exec_():
+            data = dlg.get_data()
+            try:
+                run_commit("INSERT INTO equipamentos (placa, descricao, modelo, ano, chassi, status) VALUES (%s,%s,%s,%s,%s,'ativo')",
+                           (data['placa'], data['descricao'], data['modelo'], data['ano'], data['chassi'])); QMessageBox.information(self, "OK", "Equipamento inserido."); self.load_equipamentos()
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
+
+    def edit_equip(self):
+        row = self.tbl_equip.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um equipamento."); return
+        id_ = int(self.tbl_equip.item(row,0).text()); vals = {"placa": self.tbl_equip.item(row,1).text(), "descricao": self.tbl_equip.item(row,2).text(), "modelo": self.tbl_equip.item(row,3).text(), "ano": int(self.tbl_equip.item(row,4).text()) if self.tbl_equip.item(row,4).text() else None, "chassi": self.tbl_equip.item(row,5).text()}
+        fields = [("placa","line",None),("descricao","line",None),("modelo","line",None),("ano","int",None),("chassi","line",None)]
+        dlg = RecordDialog("Editar Equipamento", fields, values=vals, parent=self)
+        if dlg.exec_():
+            data = dlg.get_data()
+            try:
+                run_commit("UPDATE equipamentos SET placa=%s, descricao=%s, modelo=%s, ano=%s, chassi=%s WHERE id_equipamento=%s",
+                           (data['placa'], data['descricao'], data['modelo'], data['ano'], data['chassi'], id_)); QMessageBox.information(self, "OK", "Atualizado."); self.load_equipamentos()
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
+
+    def del_equip(self):
+        row = self.tbl_equip.currentRow(); 
+        if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um equipamento."); return
+        id_ = int(self.tbl_equip.item(row,0).text())
+        if QMessageBox.question(self, "Confirmar", "Excluir equipamento?")==QMessageBox.Yes:
+            try:
+                run_commit("DELETE FROM equipamentos WHERE id_equipamento=%s", (id_,)); QMessageBox.information(self, "OK", "Excluído"); self.load_equipamentos()
+            except Exception as e:
+                QMessageBox.critical(self, "Erro", f"Falha: {e}")
+
+
+# --------------------
+# App start
+# --------------------
+def main():
     app = QApplication(sys.argv)
     try:
-        with open("estilo.qss", "r") as f:
-            app.setStyleSheet(f.read())
-    except FileNotFoundError:
-        pass  # se o arquivo de estilo não existir, ignora
+        ensure_database_and_tables()
+    except Exception as e:
+        QMessageBox.critical(None, "DB Error", f"Erro ao preparar banco MySQL: {e}")
+        return
 
-    login = LoginDialog()
-    if login.exec_() == QDialog.Accepted:
-        user = login.user_data
-        win = SistemaFrotaApp(user)   # 🔹 passa o usuário para o construtor
-        win.show()
-        sys.exit(app.exec_())
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()
