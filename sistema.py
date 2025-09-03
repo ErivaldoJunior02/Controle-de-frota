@@ -217,17 +217,6 @@ def ensure_database_and_tables():
         cur.execute(ddl)
     conn.commit()
 
-    # seed default admin user if not exists
-    cur.execute("SELECT COUNT(*) FROM usuarios;")
-    cnt = cur.fetchone()[0]
-    if cnt == 0:
-        cur.execute("INSERT INTO usuarios (nome, email, perfil, status) VALUES (%s,%s,%s,%s)",
-                    ("Administrador", "admin@example.com", "admin", "ativo"))
-        conn.commit()
-
-    cur.close()
-    conn.close()
-
 
 # --------------------
 # DB helpers (simple, open/close per call for reliability)
@@ -326,6 +315,9 @@ class RecordDialog(QDialog):
                 data[k] = widget.toPlainText().strip()
         return data
 
+def load_stylesheet(estilo):
+    with open('estilo.qss', "r") as f:
+        return f.read()
 
 # --------------------
 # Dialogs: Compra (multi-item)
@@ -660,7 +652,7 @@ class ImportDialog(QDialog):
         self.file_edit = QLineEdit(); btn_browse = QPushButton("Procurar"); btn_browse.clicked.connect(self.browse)
         h.addWidget(self.file_edit); h.addWidget(btn_browse)
         self.layout.addLayout(h)
-        self.cb_tipo = QComboBox(); self.cb_tipo.addItems(["fornecedores","pecas","pecas_fornecedores"])
+        self.cb_tipo = QComboBox(); self.cb_tipo.addItems(["fornecedores","pecas","pecas_fornecedores", "veículos"])
         self.layout.addWidget(QLabel("Tipo de importação:")); self.layout.addWidget(self.cb_tipo)
         self.cb_usuario = QComboBox(); users = run_select("SELECT id_usuario, nome FROM usuarios WHERE status='ativo'"); 
         for u in users: self.cb_usuario.addItem(u['nome'], u['id_usuario'])
@@ -699,11 +691,10 @@ class ImportDialog(QDialog):
                 for _, row in df.iterrows():
                     nome = str(row.get('nome', '') or row.get('Nome','')).strip()
                     if not nome: continue
-                    descricao = str(row.get('descricao','') or row.get('Descricao',''))
                     codigo = str(row.get('codigo_interno','') or row.get('Codigo_interno',''))
                     unidade = str(row.get('unidade_medida','un') or row.get('Unidade_medida','un'))
-                    cur.execute("INSERT INTO pecas (nome, descricao, codigo_interno, unidade_medida) VALUES (%s,%s,%s,%s)",
-                                (nome, descricao, codigo, unidade))
+                    cur.execute("INSERT INTO pecas (nome, codigo_interno, unidade_medida) VALUES (%s,%s,%s)",
+                                (nome, codigo, unidade))
                     # ensure estoque row exists
                     cur.execute("INSERT IGNORE INTO estoque (id_peca, quantidade_atual, quantidade_minima) VALUES (LAST_INSERT_ID(),0,0)")
             elif tipo == "pecas_fornecedores":
@@ -719,6 +710,15 @@ class ImportDialog(QDialog):
                     if id_peca and id_fornecedor:
                         cur.execute("INSERT INTO pecas_fornecedores (id_peca, id_fornecedor, preco_unitario, data_cotacao) VALUES (%s,%s,%s,%s)",
                                     (id_peca, id_fornecedor, preco, dt_s))
+            elif tipo == "veículos":
+                for _, row in df.iterrows():
+                    placa = str(row.get('placa', '') or row.get('PLACA',''))
+                    descricao = str(row.get('descricao','') or row.get('DESCRICAO',''))
+                    modelo = str(row.get('modelo') or row.get('MODELO') or 0)
+                    ano = int(row.get('ano') or row.get('ANO') or 0)
+                    chassi = str(row.get('chassi','') or row.get('CHASSI',''))
+                    renavam = int(row.get('renavam') or row.get('RENAVAM') or 0)
+                    cur.execute("INSERT INTO equipamentos (placa, descricao, modelo, ano, chassi, renavam) VALUES (%s,%s,%s,%s,%s,%s)", (placa, descricao, modelo, ano, chassi, renavam))
             else:
                 raise RuntimeError("Tipo inválido")
             # log
@@ -877,31 +877,30 @@ class MainWindow(QMainWindow):
 
     def load_pecas(self):
         filtro = self.filtro_peca.text().strip()
-        sql = "SELECT id_peca, nome, descricao, codigo_interno, unidade_medida FROM pecas"
+        sql = "SELECT id_peca, nome, codigo_interno, unidade_medida FROM pecas"
         params = ()
         if filtro:
             sql += " WHERE nome LIKE %s OR codigo_interno LIKE %s"
             params = (f"%{filtro}%", f"%{filtro}%")
         rows = run_select(sql, params)
-        self.tbl_pecas.setColumnCount(5)
-        self.tbl_pecas.setHorizontalHeaderLabels(["ID","Nome","Descrição","Código","Unidade"])
+        self.tbl_pecas.setColumnCount(4)
+        self.tbl_pecas.setHorizontalHeaderLabels(["ID","Código", "Nome","Unidade"])
         self.tbl_pecas.setRowCount(len(rows))
         for i,r in enumerate(rows):
             self.tbl_pecas.setItem(i,0,QTableWidgetItem(str(r['id_peca'])))
-            self.tbl_pecas.setItem(i,1,QTableWidgetItem(r['nome']))
-            self.tbl_pecas.setItem(i,2,QTableWidgetItem(str(r.get('descricao') or '')))
-            self.tbl_pecas.setItem(i,3,QTableWidgetItem(str(r.get('codigo_interno') or '')))
-            self.tbl_pecas.setItem(i,4,QTableWidgetItem(str(r.get('unidade_medida') or '')))
+            self.tbl_pecas.setItem(i,2,QTableWidgetItem(r['nome']))
+            self.tbl_pecas.setItem(i,1,QTableWidgetItem(str(r.get('codigo_interno') or '')))
+            self.tbl_pecas.setItem(i,3,QTableWidgetItem(str(r.get('unidade_medida') or '')))
         header = self.tbl_pecas.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
     def add_peca(self):
-        fields = [("nome","line",None), ("descricao","line",None), ("codigo_interno","line",None), ("unidade_medida","line",None)]
+        fields = [("nome","line",None), ("codigo_interno","line",None), ("unidade_medida","line",None)]
         dlg = RecordDialog("Nova Peça", fields, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                run_commit("INSERT INTO pecas (nome, descricao, codigo_interno, unidade_medida) VALUES (%s,%s,%s,%s)",
-                           (data['nome'], data['descricao'], data['codigo_interno'], data['unidade_medida'])) 
+                run_commit("INSERT INTO pecas (nome, codigo_interno, unidade_medida) VALUES (%s,%s,%s)",
+                           (data['nome'], data['codigo_interno'], data['unidade_medida'])) 
                 # ensure estoque row
                 run_commit("INSERT IGNORE INTO estoque (id_peca, quantidade_atual, quantidade_minima) SELECT id_peca,0,0 FROM pecas WHERE codigo_interno=%s", (data['codigo_interno'],))
                 QMessageBox.information(self, "OK", "Peça inserida."); self.load_pecas(); self.load_estoque()
@@ -912,14 +911,14 @@ class MainWindow(QMainWindow):
         row = self.tbl_pecas.currentRow()
         if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione uma peça."); return
         id_ = int(self.tbl_pecas.item(row,0).text())
-        vals = {"nome": self.tbl_pecas.item(row,1).text(), "descricao": self.tbl_pecas.item(row,2).text(), "codigo_interno": self.tbl_pecas.item(row,3).text(), "unidade_medida": self.tbl_pecas.item(row,4).text()}
-        fields = [("nome","line",None), ("descricao","line",None), ("codigo_interno","line",None), ("unidade_medida","line",None)]
+        vals = {"nome": self.tbl_pecas.item(row,2).text(), "codigo_interno": self.tbl_pecas.item(row,1).text(), "unidade_medida": self.tbl_pecas.item(row,3).text()}
+        fields = [("nome","line",None), ("codigo_interno","line",None), ("unidade_medida","line",None)]
         dlg = RecordDialog("Editar Peça", fields, values=vals, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                run_commit("UPDATE pecas SET nome=%s, descricao=%s, codigo_interno=%s, unidade_medida=%s WHERE id_peca=%s",
-                           (data['nome'], data['descricao'], data['codigo_interno'], data['unidade_medida'], id_))
+                run_commit("UPDATE pecas SET nome=%s, codigo_interno=%s, unidade_medida=%s WHERE id_peca=%s",
+                           (data['nome'], data['codigo_interno'], data['unidade_medida'], id_))
                 QMessageBox.information(self, "OK", "Peça atualizada."); self.load_pecas(); self.load_estoque()
             except Exception as e:
                 QMessageBox.critical(self, "Erro", f"Falha: {e}")
@@ -1025,13 +1024,15 @@ class MainWindow(QMainWindow):
         if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um item do estoque."); return
         id_est = int(self.tbl_estoque.item(row,0).text())
         current = float(self.tbl_estoque.item(row,2).text())
-        fields = [("nova_quantidade","int",None)]
-        dlg = RecordDialog("Ajustar Estoque", fields, values={"nova_quantidade": int(current)}, parent=self)
+        min = float(self.tbl_estoque.item(row,3).text())
+        fields = [("nova_quantidade","int",None), ("quantidade_minima", "int", None)]
+        dlg = RecordDialog("Ajustar Estoque", fields, values={"nova_quantidade": int(current), "quantidade_minima": int(min)}, parent=self)
         if dlg.exec_():
             new_q = dlg.get_data()['nova_quantidade']
+            new_m = dlg.get_data()['quantidade_minima']
             try:
-                run_commit("UPDATE estoque SET quantidade_atual = %s WHERE id_estoque = %s", (new_q, id_est))
-                QMessageBox.information(self, "OK", "Estoque ajustado."); self.load_estoque()
+                run_commit("UPDATE estoque SET quantidade_atual = %s, quantidade_minima = %s WHERE id_estoque = %s", (new_q, new_m, id_est))
+                QMessageBox.information(self, "OK", "Estoque ajustado.")
             except Exception as e:
                 QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
@@ -1223,40 +1224,40 @@ class MainWindow(QMainWindow):
 
     def load_equipamentos(self):
         filtro = self.filtro_equip.text().strip()
-        sql = "SELECT id_equipamento, placa, descricao, modelo, ano, chassi, status FROM equipamentos"
+        sql = "SELECT id_equipamento, placa, descricao, modelo, ano, renavam, chassi, status FROM equipamentos"
         params = ()
         if filtro:
             sql += " WHERE placa LIKE %s OR descricao LIKE %s"
             params = (f"%{filtro}%", f"%{filtro}%")
         rows = run_select(sql, params)
-        self.tbl_equip.setColumnCount(7); self.tbl_equip.setHorizontalHeaderLabels(["ID","Placa","Descrição","Modelo","Ano","Chassi","Status"]); self.tbl_equip.setRowCount(len(rows))
+        self.tbl_equip.setColumnCount(8); self.tbl_equip.setHorizontalHeaderLabels(["ID","Placa","Descrição","Modelo","Ano", "Chassi", "Renavam","Status"]); self.tbl_equip.setRowCount(len(rows))
         for i,r in enumerate(rows):
             self.tbl_equip.setItem(i,0,QTableWidgetItem(str(r['id_equipamento']))); self.tbl_equip.setItem(i,1,QTableWidgetItem(str(r.get('placa') or ''))); self.tbl_equip.setItem(i,2,QTableWidgetItem(str(r.get('descricao') or '')))
-            self.tbl_equip.setItem(i,3,QTableWidgetItem(str(r.get('modelo') or ''))); self.tbl_equip.setItem(i,4,QTableWidgetItem(str(r.get('ano') or ''))); self.tbl_equip.setItem(i,5,QTableWidgetItem(str(r.get('chassi') or ''))); self.tbl_equip.setItem(i,6,QTableWidgetItem(str(r.get('status') or '')))
+            self.tbl_equip.setItem(i,3,QTableWidgetItem(str(r.get('modelo') or ''))); self.tbl_equip.setItem(i,4,QTableWidgetItem(str(r.get('ano') or ''))); self.tbl_equip.setItem(i,5,QTableWidgetItem(str(r.get('chassi') or ''))); self.tbl_equip.setItem(i,6,QTableWidgetItem(str(r.get('renavam') or ''))); self.tbl_equip.setItem(i,7,QTableWidgetItem(str(r.get('status') or '')))
         header = self.tbl_equip.horizontalHeader(); header.setSectionResizeMode(QHeaderView.ResizeToContents); header.setStretchLastSection(True)
 
     def add_equip(self):
-        fields = [("placa","line",None),("descricao","line",None),("modelo","line",None),("ano","int",None),("chassi","line",None)]
+        fields = [("placa","line",None),("descricao","line",None),("modelo","line",None),("ano","int",None),("chassi","line",None), ("renavam", "int", None)]
         dlg = RecordDialog("Novo Equipamento", fields, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                run_commit("INSERT INTO equipamentos (placa, descricao, modelo, ano, chassi, status) VALUES (%s,%s,%s,%s,%s,'ativo')",
-                           (data['placa'], data['descricao'], data['modelo'], data['ano'], data['chassi'])); QMessageBox.information(self, "OK", "Equipamento inserido."); self.load_equipamentos()
+                run_commit("INSERT INTO equipamentos (placa, descricao, modelo, ano, chassi, renavam, status) VALUES (%s,%s,%s,%s,%s, %s, 'ativo')",
+                           (data['placa'], data['descricao'], data['modelo'], data['ano'], data['chassi'], data['renavam'])); QMessageBox.information(self, "OK", "Equipamento inserido."); self.load_equipamentos()
             except Exception as e:
                 QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
     def edit_equip(self):
         row = self.tbl_equip.currentRow(); 
         if row < 0: QMessageBox.warning(self, "Selecionar", "Selecione um equipamento."); return
-        id_ = int(self.tbl_equip.item(row,0).text()); vals = {"placa": self.tbl_equip.item(row,1).text(), "descricao": self.tbl_equip.item(row,2).text(), "modelo": self.tbl_equip.item(row,3).text(), "ano": int(self.tbl_equip.item(row,4).text()) if self.tbl_equip.item(row,4).text() else None, "chassi": self.tbl_equip.item(row,5).text()}
+        id_ = int(self.tbl_equip.item(row,0).text()); vals = {"placa": self.tbl_equip.item(row,1).text(), "descricao": self.tbl_equip.item(row,2).text(), "modelo": self.tbl_equip.item(row,3).text(), "ano": int(self.tbl_equip.item(row,4).text()) if self.tbl_equip.item(row,4).text() else None, "chassi": self.tbl_equip.item(row,5).text(), "renavam": int(self.tbl_equip.item(row,6).text()) if self.tbl_equip.item(row,6).text() else None}
         fields = [("placa","line",None),("descricao","line",None),("modelo","line",None),("ano","int",None),("chassi","line",None)]
         dlg = RecordDialog("Editar Equipamento", fields, values=vals, parent=self)
         if dlg.exec_():
             data = dlg.get_data()
             try:
-                run_commit("UPDATE equipamentos SET placa=%s, descricao=%s, modelo=%s, ano=%s, chassi=%s WHERE id_equipamento=%s",
-                           (data['placa'], data['descricao'], data['modelo'], data['ano'], data['chassi'], id_)); QMessageBox.information(self, "OK", "Atualizado."); self.load_equipamentos()
+                run_commit("UPDATE equipamentos SET placa=%s, descricao=%s, modelo=%s, ano=%s, chassi=%s, renavam=%s WHERE id_equipamento=%s",
+                           (data['placa'], data['descricao'], data['modelo'], data['ano'], data['chassi'], data['renavam'], id_)); QMessageBox.information(self, "OK", "Atualizado."); self.load_equipamentos()
             except Exception as e:
                 QMessageBox.critical(self, "Erro", f"Falha: {e}")
 
@@ -1281,6 +1282,9 @@ def main():
     except Exception as e:
         QMessageBox.critical(None, "DB Error", f"Erro ao preparar banco MySQL: {e}")
         return
+    
+    qss = load_stylesheet("estilo.qss")
+    app.setStyleSheet(qss)
 
     win = MainWindow()
     win.show()
