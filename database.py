@@ -765,6 +765,24 @@ class DbConect:
         finally:
             cursor.close()
     
+    def get_doc_setor(self, id_setor, documento):
+        cursor = self.conexao.cursor(pymysql.cursors.DictCursor)
+        
+        try:
+            cursor.execute("SELECT nome FROM documentos_necessarios WHERE id_setor = %s AND nome = %s", (id_setor, documento))
+            return cursor.fetchone() or 0
+        finally:
+            cursor.close()
+    
+    def buscar_item_nome(self, nome):
+        cursor = self.conexao.cursor(pymysql.cursors.DictCursor)
+        
+        try:
+            cursor.execute("SELECT nome FROM itens WHERE nome = %s", (nome,))
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+    
 ####################UPDATES####################
 
     def edit_fornecedor(self, info, id_fornecedor):

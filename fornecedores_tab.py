@@ -81,6 +81,11 @@ class FornecedoresTab:
     def filtro_fornecedores(self):
         termo = self.ui.edit_forn_pesquisar.text()
         
+        if not termo:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o que deseja filtrar.")
+            self.carregar_tree_fornecedores()
+            return
+        
         dados = self.db.filtro_fornecedores(termo)
         
         if not dados:
@@ -138,7 +143,85 @@ class FornecedoresTab:
         self.listar_fornecedor_vinculo()
         self.listar_setores_vinculo()
         self.carregar_tree_fornecedores()
+     
+    def vincular_documento(self):
+        if self.funcao != "ADMINISTRADOR" and self.funcao != "GERENTE" and self.funcao != "ALMOXARIFADO":
+            QtWidgets.QMessageBox.information(self.main, "Aviso", "Você não tem permissão para vincular documentos.")
+            return
         
+        id_fornecedor = self.ui.box_forn_vinculo_forn.currentData()
+        id_setor = self.ui.box_forn_vinculo_setor.currentData()
+        
+        if not id_fornecedor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção!", "Selecione um fornecedor.")
+            return
+
+        if not id_setor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção!", "Selecione um setor.")
+            return
+        
+        
+        caminho_origem, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self.main, "Selecionar documento", "", "Documentos (*.pdf *.jpg *.png *.docx);;Todos (*.*)"
+        )
+        
+        if not caminho_origem:
+            return
+        
+        nome = os.path.basename(caminho_origem)
+        tipo = nome.split(".")[-1].upper()
+        
+        pasta_base = r"C:\Users\Junior.Erivaldo\Documents\dev\python_projects\sis\documentos\fornecedores"
+        
+        pasta_destino = os.path.join(pasta_base, self.ui.box_forn_vinculo_forn.currentText(), self.ui.box_forn_vinculo_setor.currentText())
+        
+        os.makedirs(pasta_destino, exist_ok=True)
+        
+        caminho_destino = os.path.join(pasta_destino, nome)
+        
+        shutil.copy2(caminho_origem, caminho_destino)
+        
+        info = (id_setor, id_fornecedor, nome, caminho_destino, tipo, self.usuario)
+        try:
+            self.db.vincular_documento_fornecedor(info)
+            QtWidgets.QMessageBox.information(self.main, "Sucesso!", "Documento vinculado com sucesso!")
+            self.carregar_tab_forn()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao vincular documento: {e}")
+    
+    def listar_fornecedor_vinculo(self):
+        self.ui.box_forn_vinculo_forn.clear()
+        
+        try:
+            fornecedores = self.db.listar_fornecedores()
+            self.ui.box_forn_vinculo_forn.addItem("Selecione um fornecedor:")
+            if not fornecedores:
+                QtWidgets.QMessageBox.critical(self.main, "Erro", "Não foram encontrados fornecedores.")
+                return
+            
+            for f in fornecedores:
+                self.ui.box_forn_vinculo_forn.addItem(f["nome_empresarial"], f["id_fornecedor"])
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao listar fornecedores: {e}")
+    
+    def listar_setores_vinculo(self):
+        self.ui.box_forn_vinculo_setor.clear()
+        id_fornecedor = self.ui.box_forn_vinculo_forn.currentData()
+        
+        try:
+            setores = self.db.setor_fornecedor(id_fornecedor)
+            self.ui.box_forn_vinculo_setor.addItem("Selecione um setor:")
+            if not id_fornecedor:
+                return
+            if not setores:
+                QtWidgets.QMessageBox.critical(self.main, "Erro", "Não foram encontrados setores.")
+                return
+            
+            for f in setores:
+                self.ui.box_forn_vinculo_setor.addItem(f["atividade"], f["id_setor"])
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao listar setores: {e}")
+    
 #===============================CADASTRO FORNECEDORES===============================#
 
     def carregar_tab_cadastro_forn(self):
@@ -163,6 +246,8 @@ class FornecedoresTab:
             QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao carregar setores: {e}")
 
     def buscar_por_cnpj(self, cnpj):
+        self.validar_cnpj()
+        
         url = f"https://www.receitaws.com.br/v1/cnpj/{cnpj}"
         
         querystring = {"token": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX", "cnpj":"06990590000123", "plugin": "RF"}
@@ -196,6 +281,17 @@ class FornecedoresTab:
                 self.ui.edit_cadastro_forn_uf.text(), self.ui.edit_cadastro_forn_num.text(), self.ui.edit_cadastro_forn_complemento.text(),
                 self.ui.edit_cadastro_forn_cep.text(), self.ui.edit_cadastro_forn_email.text(), self.ui.edit_cadastro_forn_tel.text(), "NAO_APTO", self.usuario)
         
+        categoria = self.ui.box_cadastro_forn_categoria.currentText()
+        nome = self.ui.edit_cadastro_forn_nome.text()
+        
+        if categoria not in ("MECANICA", "PINTURA", "SIDERURGICA", "ABASTECIMENTO", "LIMPEZA", "ADMINISTRATIVO"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Por favor informe a categoria do fornecedor.")
+            return
+        
+        if not nome:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Por favor digite o nome do fornecedor.")
+            return
+        
         id_fornecedor = self.db.cadastrar_fornecedor(info)
         
         for s in self.lista_setor:
@@ -218,7 +314,7 @@ class FornecedoresTab:
     def cadastro_vendedores(self):
         
         nome = self.ui.edit_forn_cadastro_vendedores_nome.text()
-        telefone = self.ui.edit_forn_cadastro_vendedores_telefone.text()
+        telefone = self.ui.edit_forn_cadastro_vendedores_telefone.text().replace("(", "").replace(")", "").replace("-", "").replace(" ", "")
         status = self.ui.box_forn_cadastro_vendedores_status.currentText()
         
         info = {
@@ -226,6 +322,26 @@ class FornecedoresTab:
             "telefone": telefone,
             "status": status
         }
+        
+        if not nome:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o nome do vendedor.")
+            return
+        
+        if not telefone:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o contato do vendedor.")
+            return
+
+        if len(telefone) < 11 or len(telefone) > 11:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite um número de telefone válido.")
+            return
+        
+        if not telefone.isdigit():
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite um número de telefone sem letras")
+            return
+        
+        if status not in ("ATIVO", "FERIAS", "DESLIGADO"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione o status do vendedor.")
+            return
         
         self.lista_vendedor.append(info)
         self.carregar_vendedores()
@@ -270,6 +386,11 @@ class FornecedoresTab:
             "setor": self.ui.box_cadastro_forn_setor.currentText()
         }
         
+        setor = self.ui.box_cadastro_forn_setor.currentData()
+        if not setor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um setor.")
+            return
+        
         self.lista_setor.append(info_setor)
         self.carregar_tabela_setores()
 
@@ -283,6 +404,17 @@ class FornecedoresTab:
             
             tabela.setItem(row, 0, QtWidgets.QTableWidgetItem(item["setor"]))
 
+    def validar_cnpj(self):
+        cnpj = self.ui.edit_cadastro_forn_cnpj.text().replace(",", "").replace("/", "").replace("-", "")
+        
+        if not cnpj or cnpj == "":
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o CNPJ da empresa.")
+            return
+
+        if len(cnpj) < 14 or len(cnpj) > 14:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "CNPJ inválido, por favor digite um CNPJ existente.")
+            return
+    
 #===============================EDITAR FORNECEDORES===============================#
 
     def carregar_tab_edit_forn(self):
@@ -291,6 +423,7 @@ class FornecedoresTab:
             return
         
         self.ui.tabs.setCurrentIndex(2)
+        self.limpar_campos_edit()
         self.listar_fornecedores_edit()
         self.carregar_lista_setores_edit()
 
@@ -326,6 +459,7 @@ class FornecedoresTab:
         id_fornecedor = self.ui.box_edit_forn_forn.currentData()
         
         if not id_fornecedor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um fornecedor para buscar.")
             return
         
         self.ui.box_edit_forn_setor.clear()
@@ -343,7 +477,12 @@ class FornecedoresTab:
         id_fornecedor = self.ui.box_edit_forn_forn.currentData()
         id_setor = self.ui.box_edit_forn_setor.currentData()
         
-        if not id_setor or not id_fornecedor:
+        if not id_fornecedor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um fornecedor para remover o setor.")
+            return
+        
+        if not id_setor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um setor para remover.")
             return
         
         self.db.remover_setor(id_fornecedor, id_setor)       
@@ -446,9 +585,15 @@ class FornecedoresTab:
             "setor": self.ui.box_edit_forn_novo_setor.currentText()
         }
         
+        id_setor = self.ui.box_edit_forn_novo_setor.currentData()
+        
+        if not id_setor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um setor para adicionar.")
+            return
+        
         self.lista_setor_edit.append(info_setor)
         self.carregar_tab_setores_edit()
-        
+    
 #===============================SETORES===============================#
 
     def carregar_tree_setores(self):
@@ -473,6 +618,10 @@ class FornecedoresTab:
 
     def filtro_setores(self):
         termo = self.ui.edit_setor_pesquisar.text()
+        
+        if not termo:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o que deseja filtrar.")
+            return
         
         dados = self.db.filtro_setores(termo)
         
@@ -539,6 +688,17 @@ class FornecedoresTab:
     def cadastrar_setor(self):
         info = (self.ui.edit_cadastro_setor_atividade.text(), self.ui.box_cadastro_setor_criticidade.currentText(), self.usuario)
         
+        atividade = self.ui.edit_cadastro_setor_atividade.text()
+        criticidade = self.ui.box_cadastro_setor_criticidade.currentText()
+        
+        if not atividade:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o nome do setor.")
+            return
+        
+        if criticidade not in ("CRITICO", "MODERADO", "NAO_CRITICO"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione a criticidade.")
+            return
+        
         try:
             id_setor = self.db.cadastrar_setor(info)
             QtWidgets.QMessageBox.information(self.main, "Cadastro realizado!", "Cadastro do setor realizado com sucesso!")
@@ -548,12 +708,15 @@ class FornecedoresTab:
         
         try:
             for d in self.lista_documentos:
+                documento = self.db.get_doc_setor(id_setor, d["nome"])
+                if documento:
+                    continue
                 info_doc = (id_setor, d["nome"], d["tipo"], self.usuario)
                 self.db.registrar_documento_necessario(info_doc)
+            QtWidgets.QMessageBox.information(self.main, "Sucesso!", "Documentos listados com sucesso!")
         except Exception as e:
             QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao listar documentos necessários ajuste o setor: {e}")
             return
-        QtWidgets.QMessageBox.information(self.main, "Sucesso!", "Documentos listados com sucesso!")
         self.limpar_campos_setor_cadastro()
         
     def listar_doc_necessarios(self):
@@ -561,6 +724,17 @@ class FornecedoresTab:
             "nome": self.ui.edit_cadastro_setor_doc_nec_nome.text(),
             "tipo": self.ui.box_cadastro_setor_doc_nec_tipo.currentText()
         }
+        
+        nome = self.ui.edit_cadastro_setor_doc_nec_nome.text()
+        tipo = self.ui.box_cadastro_setor_doc_nec_tipo.currentText()
+        
+        if not nome:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o nome do documento necessário.")
+            return
+        
+        if tipo not in ("ALVARÁ", "CERTIFICADO", "LICENÇA", "COMPROVANTE", "ATESTADO"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione o tipo do documento.")
+            return
         
         self.lista_documentos.append(info_doc)
         self.carregar_tabela_doc_nec()
@@ -657,6 +831,9 @@ class FornecedoresTab:
             return
         try:
             for item in self.lista_documentos:
+                documento = self.db.get_doc_setor(id_setor, item["nome"])
+                if documento:
+                    continue
                 info_doc = (id_setor, item["nome"], item["tipo"], self.usuario)
                 self.db.registrar_documento_necessario(info_doc)
             QtWidgets.QMessageBox.information(self.main, "Sucesso!", "Documentos alterados com sucesso!")
@@ -675,84 +852,4 @@ class FornecedoresTab:
         self.ui.edit_edit_setor_criticidade.clear()
         self.lista_documentos.clear()
         self.carregar_tabela_novo_doc_edit()
-    
-#===============================VINCULAR DOCUMENTO===============================#
-
-    def vincular_documento(self):
-        if self.funcao != "ADMINISTRADOR" and self.funcao != "GERENTE" and self.funcao != "ALMOXARIFADO":
-            QtWidgets.QMessageBox.information(self.main, "Aviso", "Você não tem permissão para vincular documentos.")
-            return
-        
-        id_fornecedor = self.ui.box_forn_vinculo_forn.currentData()
-        id_setor = self.ui.box_forn_vinculo_setor.currentData()
-        
-        if not id_fornecedor:
-            QtWidgets.QMessageBox.warning(self.main, "Atenção!", "Selecione um fornecedor.")
-            return
-
-        if not id_setor:
-            QtWidgets.QMessageBox.warning(self.main, "Atenção!", "Selecione um setor.")
-            return
-        
-        
-        caminho_origem, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self.main, "Selecionar documento", "", "Documentos (*.pdf *.jpg *.png *.docx);;Todos (*.*)"
-        )
-        
-        if not caminho_origem:
-            return
-        
-        nome = os.path.basename(caminho_origem)
-        tipo = nome.split(".")[-1].upper()
-        
-        pasta_base = r"C:\Users\Junior.Erivaldo\Documents\dev\python_projects\sis\documentos\fornecedores"
-        
-        pasta_destino = os.path.join(pasta_base, self.ui.box_forn_vinculo_forn.currentText(), self.ui.box_forn_vinculo_setor.currentText())
-        
-        os.makedirs(pasta_destino, exist_ok=True)
-        
-        caminho_destino = os.path.join(pasta_destino, nome)
-        
-        shutil.copy2(caminho_origem, caminho_destino)
-        
-        info = (id_setor, id_fornecedor, nome, caminho_destino, tipo, self.usuario)
-        try:
-            self.db.vincular_documento_fornecedor(info)
-            QtWidgets.QMessageBox.information(self.main, "Sucesso!", "Documento vinculado com sucesso!")
-            self.carregar_tab_forn()
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao vincular documento: {e}")
-    
-    def listar_fornecedor_vinculo(self):
-        self.ui.box_forn_vinculo_forn.clear()
-        
-        try:
-            fornecedores = self.db.listar_fornecedores()
-            self.ui.box_forn_vinculo_forn.addItem("Selecione um fornecedor:")
-            if not fornecedores:
-                QtWidgets.QMessageBox.critical(self.main, "Erro", "Não foram encontrados fornecedores.")
-                return
-            
-            for f in fornecedores:
-                self.ui.box_forn_vinculo_forn.addItem(f["nome_empresarial"], f["id_fornecedor"])
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao listar fornecedores: {e}")
-    
-    def listar_setores_vinculo(self):
-        self.ui.box_forn_vinculo_setor.clear()
-        id_fornecedor = self.ui.box_forn_vinculo_forn.currentData()
-        
-        try:
-            setores = self.db.setor_fornecedor(id_fornecedor)
-            self.ui.box_forn_vinculo_setor.addItem("Selecione um setor:")
-            if not id_fornecedor:
-                return
-            if not setores:
-                QtWidgets.QMessageBox.critical(self.main, "Erro", "Não foram encontrados setores.")
-                return
-            
-            for f in setores:
-                self.ui.box_forn_vinculo_setor.addItem(f["atividade"], f["id_setor"])
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao listar setores: {e}")
     

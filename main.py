@@ -34,6 +34,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btn_forn_edit_forn.clicked.connect(self.fornecedores.carregar_tab_edit_forn)
         self.ui.btn_forn_atualizar.clicked.connect(self.fornecedores.carregar_tree_fornecedores)
         self.ui.btn_forn_setores.clicked.connect(self.fornecedores.carregar_tab_setores)
+        self.ui.btn_forn_vinculo.clicked.connect(self.fornecedores.vincular_documento)
+        self.ui.box_forn_vinculo_forn.currentTextChanged.connect(self.fornecedores.listar_setores_vinculo)
         
 #======================FORNECEDORES CADASTRO======================#
         self.ui.btn_forn_cadastro_vendedores_add_vendedor.clicked.connect(self.fornecedores.cadastro_vendedores)
@@ -52,6 +54,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btn_edit_forn_limpar.clicked.connect(self.fornecedores.limpar_campos_edit)
 
 #======================SETORES======================#
+
         self.ui.btn_setor_pesquisar.clicked.connect(self.fornecedores.filtro_setores)
         self.ui.btn_setor_pg_forn.clicked.connect(self.fornecedores.carregar_tab_forn)
         self.ui.btn_setor_atualizar.clicked.connect(self.fornecedores.carregar_tree_setores)
@@ -60,30 +63,24 @@ class MainWindow(QtWidgets.QMainWindow):
         
 
 #======================SETOR CADASTRO======================#
+
         self.ui.btn_cadastro_setor_pg_inicial.clicked.connect(self.fornecedores.carregar_tab_setores)
         self.ui.btn_cadastro_setor_doc_nec_add.clicked.connect(self.fornecedores.listar_doc_necessarios)
         self.ui.btn_cadastro_setor_add.clicked.connect(self.fornecedores.cadastrar_setor)
         self.ui.btn_cadastro_setor_limpar.clicked.connect(self.fornecedores.limpar_campos_setor_cadastro)
 
-#======================SETOR CADASTRO======================#
+#======================EDITAR SETOR======================#
+
         self.ui.btn_edit_setor_pg_inicial.clicked.connect(self.fornecedores.carregar_tab_setores)
         self.ui.btn_edit_setor_pesquisa.clicked.connect(self.fornecedores.buscar_setor)
         self.ui.btn_edit_setor_novo_doc.clicked.connect(self.fornecedores.listar_novo_doc_edit_setor)
         self.ui.btn_edit_setor_remover_doc.clicked.connect(self.fornecedores.remover_doc)
         self.ui.btn_edit_setor_salvar.clicked.connect(self.fornecedores.manter_alteracoes_edit_setor)
         self.ui.btn_edit_setor_limpar.clicked.connect(self.fornecedores.limpar_campos_edit_setor)
-
-#======================SETOR CADASTRO======================#
-
-        self.ui.btn_forn_vinculo.clicked.connect(self.fornecedores.vincular_documento)
-        self.ui.box_forn_vinculo_forn.currentTextChanged.connect(self.fornecedores.listar_setores_vinculo)
-        
-#======================SETOR CADASTRO======================#
-
-        self.ui.btn_estoque_itens_filtro.clicked.connect(self.estoque.filtrar_estoque)
         
 #======================ESTOQUE======================#
 
+        self.ui.btn_estoque_itens_filtro.clicked.connect(self.estoque.filtrar_estoque)
         self.ui.btn_estoque_movimentacoes_filtro.clicked.connect(self.estoque.filtro_movimentacoes)
         self.ui.btn_estoque_movimentacoes_periodo.clicked.connect(self.estoque.filtro_movimentacoes_periodo)
         self.ui.btn_estoque_atualizar.clicked.connect(self.estoque.carregar_tab_estoque)
@@ -218,7 +215,7 @@ class Login(QtWidgets.QWidget):
         self.login.setupUi(self)
         self.login.btn_login_entrar.clicked.connect(self.logar)
         
-        self.login.edit_login_email.setText("teste@gmail.com")
+        self.login.edit_login_email.setText("erivaldosantosjunior81@gmail.com")
         self.login.edit_login_senha.setText("123456")
         
         self.id_usuario = 0

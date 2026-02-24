@@ -39,10 +39,11 @@ class EstoqueTab:
 
     def filtrar_estoque(self):
         if self.ui.edit_estoque_itens_filtro.text() == "":
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o item que deseja filtrar.")
             self.carregar_table_estoque()
             return
         
-        termo = self.ui.edit_estoque_itens_filtro.text() 
+        termo = self.ui.edit_estoque_itens_filtro.text()
         tabela = self.ui.table_estoque_itens
         tabela.setRowCount(0)
         
@@ -82,6 +83,7 @@ class EstoqueTab:
             
     def filtro_movimentacoes(self):
         if self.ui.edit_movimentacoes_filtro.text() == "":
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o tipo de movimentação que deseja filtrar.")
             self.carregar_tree_movimentacoes()
             return
         
@@ -110,6 +112,10 @@ class EstoqueTab:
     def filtro_movimentacoes_periodo(self):
         data_1 = self.ui.date_estoque_movimentacoes_periodo_inicio.date().toString("yyyy-MM-dd")
         data_2 = self.ui.date_estoque_movimentacoes_periodo_fim.date().toString("yyyy-MM-dd")
+        
+        if data_1 > data_2:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um período válido.")
+            return
         
         dados = self.db.filtrar_movimentacoes_periodo(data_1, data_2)
         
@@ -151,11 +157,19 @@ class EstoqueTab:
         self.ui.tabs.setCurrentIndex(7)
         self.carregar_tree_itens()
         self.carregar_lista_itens_edit()
+        self.carregar_lista_itens_add()
         self.limpar_campos_itens()
         self.limpar_campos_edit()
     
     def cadastrar_itens(self):
         info = (self.ui.edit_itens_cadastro_nome.text(), self.ui.edit_itens_cadastro_codigo.text(), self.ui.edit_itens_cadastro_medida.text(), self.usuario)
+        
+        nome = self.ui.edit_itens_cadastro_nome.text()
+        item = self.db.buscar_item_nome(nome)
+        
+        if item:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", f"Um item com o nome {nome} já existe.")
+            return
         
         try:
             self.db.cadastrar_itens(info)
@@ -171,6 +185,11 @@ class EstoqueTab:
         self.ui.edit_itens_cadastro_codigo.clear()
         self.ui.edit_itens_cadastro_medida.clear()
     
+    def adicionar_ao_estoque(self):
+        info = (self.ui.box_add_estoque_item.currentData(), self.ui.edit_add_estoque_qntd_atual.text(), self.ui.edit_add_estoque_qntd_minima.text())
+        
+        
+    
     def carregar_lista_itens_edit(self):
         self.ui.box_edit_itens_nome.clear()
 
@@ -180,6 +199,19 @@ class EstoqueTab:
             
             for i in itens:
                 self.ui.box_edit_itens_nome.addItem(i["nome"], i["id_item"])
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao carregar lista de itens: {e}")
+            return
+    
+    def carregar_lista_itens_add(self):
+        self.ui.box_add_estoque_item.clear()
+
+        try:
+            self.ui.box_add_estoque_item.addItem("Selecione um item:")
+            itens = self.db.get_all_itens()
+            
+            for i in itens:
+                self.ui.box_add_estoque_item.addItem(i["nome"], i["id_item"])
         except Exception as e:
             QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao carregar lista de itens: {e}")
             return
@@ -201,6 +233,12 @@ class EstoqueTab:
                 "medida": self.ui.edit_edit_itens_medida.text(), 
                 "usuario": self.usuario,
                 "id_item": self.ui.box_edit_itens_nome.currentData()}
+        
+        
+        item = self.db.buscar_item_nome(info["nome"])
+        if item:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", f"Um item com o nome {info["nome"]} já existe.")
+            return
         
         try:
             self.db.edit_item(info)
