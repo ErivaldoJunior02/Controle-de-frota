@@ -10,6 +10,8 @@ class EstoqueTab:
         self.funcao = main.funcao
         self.itens_compra = []
         self.itens_movimentacao = []
+        self.itens_criticos = []
+        self.item_verificado = 0
         
 #===============================ESTOQUE=============================#
 
@@ -20,6 +22,7 @@ class EstoqueTab:
         self.ui.date_estoque_movimentacoes_periodo_fim.setDate(QtCore.QDate.currentDate())
         self.carregar_table_estoque()
         self.carregar_tree_movimentacoes()
+        self.verificar_estoque()
 
     def carregar_table_estoque(self):
         itens = self.db.get_itens_estoque()
@@ -98,7 +101,7 @@ class EstoqueTab:
             if mov_atual != row["id_movimentacao"]:
                 mov_atual = row["id_movimentacao"]
                 
-                movimentacao = QtWidgets.QTreeWidgetItem(self.ui.tree_estoque_movimentacoes, [row["tipo"]])
+                movimentacao = QtWidgets.QTreeWidgetItem(self.ui.tree_estoque_movimentacoes, [f"{row["tipo"]} - {row["register_at"]}"])
                 movimentacao.setData(0, QtCore.Qt.UserRole, mov_atual)
                 
                 QtWidgets.QTreeWidgetItem(movimentacao, [f"Origem: {row["origem"]}"])
@@ -127,7 +130,7 @@ class EstoqueTab:
             if mov_atual != row["id_movimentacao"]:
                 mov_atual = row["id_movimentacao"]
                 
-                movimentacao = QtWidgets.QTreeWidgetItem(self.ui.tree_estoque_movimentacoes, [row["tipo"]])
+                movimentacao = QtWidgets.QTreeWidgetItem(self.ui.tree_estoque_movimentacoes, [f"{row["tipo"]} - {row["register_at"]}"])
                 movimentacao.setData(0, QtCore.Qt.UserRole, mov_atual)
                 
                 QtWidgets.QTreeWidgetItem(movimentacao, [f"Origem: {row["origem"]}"])
@@ -137,7 +140,54 @@ class EstoqueTab:
                 
                 itens_usados = QtWidgets.QTreeWidgetItem(movimentacao, ["ITENS MOVIMENTADOS"])
             QtWidgets.QTreeWidgetItem(itens_usados, [f"Item: {row["nome"]} - Quantidade: {row["quantidade"]}"])    
+    
+    def verificar_estoque(self):
+        itens_criticos = self.db.verificar_itens_criticos()
+        
+        if self.item_verificado != 0:
+            return
+        
+        for item in itens_criticos:
+            info = {
+                "id_item": item["id_item"],
+                "item": item["nome"],
+                "quantidade_atual": item["quantidade_atual"],
+                "quantidade_minima": item["quantidade_minima"],
+                "quantidade": item["quantidade_minima"] - item["quantidade_atual"],
+                "valor_unitario": item["ultimo_preco"]
+            }
             
+            self.itens_criticos.append(info)
+            self.itens_compra.append(info)
+        
+        if not self.itens_criticos:
+            return
+        
+        mensagem = "Os seguintes itens estão em estado de alerta:\n\n"
+        
+        for item in self.itens_criticos:
+            mensagem += f"Item: {item["item"]} - Quantidade atual: {item["quantidade"]} Quantidade mínima: {item["quantidade_minima"]}\n"
+        
+        QtWidgets.QMessageBox.warning(self.main, "Itens críticos", mensagem)
+        
+        self.carregar_tab_compras()
+
+        tabela = self.ui.table_compras_itens
+        tabela.setRowCount(0)
+        
+        for item in self.itens_criticos:
+            row = tabela.rowCount()
+            tabela.insertRow(row)
+            
+            tabela.setItem(row, 0, QtWidgets.QTableWidgetItem(item["item"]))
+            tabela.setItem(row, 1, QtWidgets.QTableWidgetItem(str(item["quantidade_minima"] - item["quantidade_atual"])))
+            tabela.setItem(row, 2, QtWidgets.QTableWidgetItem(f"R${item["valor_unitario"]:.2f}"))
+            tabela.setItem(row, 3, QtWidgets.QTableWidgetItem(f"R${float((item["quantidade_minima"] - item["quantidade_atual"])) * float(item["valor_unitario"]):.2f}"))
+        
+        if self.ui.frame_compras_cadastro.width() == 0:
+            self.ui.frame_compras_cadastro.setFixedWidth(850)
+        self.item_verificado += 1 
+    
 #===============================ITENS=============================#        
     
     def carregar_tree_itens(self):
@@ -160,6 +210,7 @@ class EstoqueTab:
         self.carregar_lista_itens_add()
         self.limpar_campos_itens()
         self.limpar_campos_edit()
+        self.limpar_campos_add_estoque()
     
     def cadastrar_itens(self):
         info = (self.ui.edit_itens_cadastro_nome.text(), self.ui.edit_itens_cadastro_codigo.text(), self.ui.edit_itens_cadastro_medida.text(), self.usuario)
@@ -186,10 +237,28 @@ class EstoqueTab:
         self.ui.edit_itens_cadastro_medida.clear()
     
     def adicionar_ao_estoque(self):
-        info = (self.ui.box_add_estoque_item.currentData(), self.ui.edit_add_estoque_qntd_atual.text(), self.ui.edit_add_estoque_qntd_minima.text())
+        info = (self.ui.box_add_estoque_item.currentData(), self.ui.edit_add_estoque_qntd_atual.text(), self.ui.edit_add_estoque_qntd_minima.text(), self.usuario)
         
+        id_item = self.ui.box_add_estoque_item.currentData()
+        item = self.db.verificar_estoque(id_item)
         
+        if item:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Item já cadastrado no estoque.")
+            return
+        
+        try:
+            self.db.adicionar_ao_estoque(info)
+            QtWidgets.QMessageBox.information(self.main, "Sucesso", "Item adicionado ao estoque com sucesso!")
+            self.limpar_campos_add_estoque()
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self.main, "Erro", f"Erro ao adicionar item ao estoque: {e}")
+            return
     
+    def limpar_campos_add_estoque(self):
+        self.ui.box_add_estoque_item.setCurrentIndex(0)
+        self.ui.edit_add_estoque_qntd_atual.clear()
+        self.ui.edit_add_estoque_qntd_minima.clear()
+          
     def carregar_lista_itens_edit(self):
         self.ui.box_edit_itens_nome.clear()
 
@@ -271,6 +340,7 @@ class EstoqueTab:
                 compras.setData(0, QtCore.Qt.UserRole, row["id_compra"])
                 
                 QtWidgets.QTreeWidgetItem(compras, [f"Nota fiscal: {row["n_danfe"]}"])
+                QtWidgets.QTreeWidgetItem(compras, [f"Chave de acesso: {row["chave_acesso"]}"])
                 QtWidgets.QTreeWidgetItem(compras, [f"Fornecedor: {row["fornecedor"]}"])
                 QtWidgets.QTreeWidgetItem(compras, [f"Vendedor: {row["vendedor"]}"])
                 QtWidgets.QTreeWidgetItem(compras, [f"Solicitante: {row["usuario"]}"])
@@ -284,14 +354,38 @@ class EstoqueTab:
     
     def carregar_tab_compras(self):
         self.ui.tabs.setCurrentIndex(8)
+        self.ui.frame_compras_cadastro.setFixedWidth(0)
         self.carregar_tree_compras()
+        self.carregar_tabela_itens()
         self.carregar_lista_fornecedores_compras()
         self.carregar_lista_vendedores_compras()
         self.carregar_lista_itens_compras()
+   
+    def toggle_compras(self):
+        if self.ui.frame_compras_cadastro.width() == 0:
+            self.ui.frame_compras_cadastro.setFixedWidth(850)
+            self.limpar_campos_compras()
+        else:
+            self.ui.frame_compras_cadastro.setFixedWidth(0)
     
     def cadastrar_compra(self):
         info_compra = (self.ui.box_compras_cadastro_forn.currentData(), self.ui.box_compras_cadastro_vendedor.currentData(), self.ui.txt_compras_cadastro_motivo.toPlainText(),
                        self.ui.edit_compras_cadastro_valor_total.text(), self.usuario)
+        
+        id_fornecedor = self.ui.box_compras_cadastro_forn.currentData()
+        id_vendedor = self.ui.box_compras_cadastro_vendedor.currentData()
+        
+        if not id_fornecedor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um fornecedor.")
+            return
+        
+        if not id_vendedor:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um vendedor")
+            return
+        
+        if not self.itens_compra:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Adicione pelo menos um item a compra.")
+            return
         
         try:
             id_compra = self.db.cadastrar_compra(info_compra)
@@ -320,17 +414,18 @@ class EstoqueTab:
         
         self.itens_compra.append(info_itens)
         
-        valor_atual_texto = self.ui.edit_compras_cadastro_valor_total.text().replace(",", ".")
-        valor_atual = float(valor_atual_texto) if valor_atual_texto else 0.0
-        valor_item = info_itens["valor_unitario"]
-        valor_total = valor_atual + (valor_item * info_itens["quantidade"])
-        
-        self.ui.edit_compras_cadastro_valor_total.setText(f"{valor_total:.2f}")
         self.carregar_tabela_itens()
+    
+    def incluir_itens_criticos(self):
+        for item in self.itens_criticos:
+            self.itens_compra.append(item)
+            self.carregar_tabela_itens()
     
     def carregar_tabela_itens(self):
         tabela = self.ui.table_compras_itens
         tabela.setRowCount(0)
+        
+        valor_total = 0.0
         
         for item in self.itens_compra:
             row = tabela.rowCount()
@@ -339,7 +434,10 @@ class EstoqueTab:
             tabela.setItem(row, 0, QtWidgets.QTableWidgetItem(item["item"]))
             tabela.setItem(row, 1, QtWidgets.QTableWidgetItem(str(item["quantidade"])))
             tabela.setItem(row, 2, QtWidgets.QTableWidgetItem(f"R${item["valor_unitario"]:.2f}"))
-            tabela.setItem(row, 3, QtWidgets.QTableWidgetItem(f"R${item["quantidade"] * item["valor_unitario"]:.2f}"))
+            tabela.setItem(row, 3, QtWidgets.QTableWidgetItem(f"R${float(item["quantidade"]) * float(item["valor_unitario"]):.2f}"))
+            
+            valor_total += float(item["quantidade"]) * float(item["valor_unitario"])
+        self.ui.edit_compras_cadastro_valor_total.setText(f"R$ {valor_total:.2f}")
     
     def limpar_campos_compras(self):
         self.ui.box_compras_cadastro_forn.setCurrentIndex(0)
@@ -489,6 +587,19 @@ class EstoqueTab:
         compra = self.ui.tree_compras_cadastradas.currentItem()
         
         if not compra:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione uma compra para vincular NF.")
+            return
+        
+        numero_nota = self.ui.edit_compras_cadastro_nf.text()
+        
+        if not numero_nota:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite o número da nota.")
+            return
+        
+        chave_acesso = self.ui.edit_compras_cadastro_nf_chave.text()
+        
+        if not chave_acesso:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite a chave de acesso (encontra-se embaixo do código de barras da nota).")
             return
         
         id_compra = compra.data(0, QtCore.Qt.UserRole)
@@ -508,6 +619,19 @@ class EstoqueTab:
         
         self.carregar_tree_compras()
         self.limpar_campos_compras()
+
+    def remover_item_lista_compra(self):
+        row = self.ui.table_compras_itens.currentRow()
+        
+        if row >= 0:
+            id_item = self.ui.table_compras_itens.item(row, 0).text()
+            
+            for item in self.itens_compra:
+                if item["item"] == id_item:
+                    self.itens_compra.remove(item)
+                    QtWidgets.QMessageBox.information(self.main, "Sucesso", "Item removido com sucesso!")
+                    self.carregar_tabela_itens()
+                    return
 
 #===============================EDITAR ESTOQUE=============================#
 
@@ -536,6 +660,24 @@ class EstoqueTab:
     
     def manter_alteracoes_edit(self):
         row = self.ui.table_estoque_itens.currentRow()
+        
+        texto = self.ui.edit_estoque_edit_qntd.text()
+
+        try:
+            valor = float(texto)
+            if valor < 0:
+                raise ValueError
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite um valor válido.")
+        
+        texto_2 = self.ui.edit_estoque_edit_nova_qntd.text()
+
+        try:
+            valor = float(texto_2)
+            if valor < 0:
+                raise ValueError
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite um valor válido.")
         
         if row >= 0:
             id_item = self.ui.table_estoque_itens.item(row, 0).text()
@@ -598,6 +740,24 @@ class EstoqueTab:
     def adicionar_item_movimentacao(self):
         id_item = self.ui.box_movimentacao_itens_item.currentData()
         
+        if not id_item:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um item para adicionar.")
+            return
+        
+        quantidade = self.ui.edit_movimentacao_itens_qntd.text()
+        
+        if not quantidade:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite a quantidade de itens a ser movimentado.")
+            return
+        
+        try:
+            valor = float(quantidade)
+            if valor < 0:
+                raise ValueError
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Digite um valor válido.")
+            return
+                
         item = self.db.get_itens_movimentacao(id_item)
         
         info_item_movimentacao = {
@@ -627,15 +787,50 @@ class EstoqueTab:
             tabela.setItem(row, 4, QtWidgets.QTableWidgetItem(str(item["estoque"])))          
     
     def registrar_movimentacao(self):
-        if self.ui.box_movimentacao_tipo.currentText() == "SAIDA":
-            os = self.ui.box_movimentacao_os.currentData()
-        elif self.ui.box_movimentacao_tipo.currentText() == "ENTRADA":
-            os = None
-        else:
-            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione um tipo de movimentação válido.")
+
+        if self.ui.box_movimentacao_tipo.currentText() == "SAIDA" and self.ui.box_movimentacao_destino.currentText() == "MECANICA" and not self.ui.box_movimentacao_os.currentData():
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione uma OS")
             return
         
-        info_mov = (self.ui.box_movimentacao_tipo.currentText(), os, self.ui.edit_movimentacao_origem.text(), self.ui.edit_movimentacao_responsavel.text(), self.ui.edit_movimentacao_destino.text(),
+        if self.ui.box_movimentacao_tipo.currentText() not in ("ENTRADA", "SAIDA"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione o tipo de movimentação.")
+            return
+        
+        if self.ui.box_movimentacao_origem.currentText() not in ("MECANICA", "FUNCIONARIO", "ESTOQUE"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione a origem da movimentação.")
+            return
+        
+        if self.ui.box_movimentacao_destino.currentText() not in ("MECANICA", "FUNCIONARIO", "ESTOQUE"):
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Selecione o destino da movimentação.")
+            return
+        
+        if self.ui.box_movimentacao_tipo.currentText() == "ENTRADA" and self.ui.box_movimentacao_origem.currentText() == "ESTOQUE":
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "O estoque não pode dar entrada para ele mesmo")
+            return
+        
+        if self.ui.box_movimentacao_tipo.currentText() == "ENTRADA" and self.ui.box_movimentacao_destino.currentText() != "ESTOQUE":
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Entrada é apenas destinada ao estoque.")
+            return
+        
+        if self.ui.box_movimentacao_tipo.currentText() == "SAIDA" and self.ui.box_movimentacao_origem.currentText() != "ESTOQUE":
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Não é possível realizar a retirada de itens que não sejam do estoque.")
+            return
+        
+        if self.ui.box_movimentacao_tipo.currentText() == "SAIDA" and self.ui.box_movimentacao_destino.currentText() == "ESTOQUE":
+            QtWidgets.QMessageBox.information(self.main, "Atenção", "Não é possível realizar uma saída para o próprio estoque")
+            return
+        
+        responsavel = self.ui.edit_movimentacao_responsavel.text()
+        
+        if not responsavel:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "Informe o responsável pela solicitacao do item.")
+            return
+        
+        if not self.itens_movimentacao:
+            QtWidgets.QMessageBox.warning(self.main, "Atenção", "É necessário ter pelo menos um item para realizar a movimentação.")
+            return
+            
+        info_mov = (self.ui.box_movimentacao_tipo.currentText(), self.ui.box_movimentacao_os.currentData(), self.ui.box_movimentacao_origem.currentText(), self.ui.edit_movimentacao_responsavel.text(), self.ui.box_movimentacao_destino.currentText(),
                     self.ui.txt_movimentacao_descricao.toPlainText(), self.usuario)
         
         try:
@@ -660,7 +855,8 @@ class EstoqueTab:
     def limpar_campos_movimentacao(self):
         self.ui.box_movimentacao_tipo.setCurrentIndex(0)
         self.ui.edit_movimentacao_responsavel.clear()
-        self.ui.edit_movimentacao_destino.clear()
+        self.ui.box_movimentacao_destino.setCurrentIndex(0)
+        self.ui.box_movimentacao_origem.setCurrentIndex(0)
         self.ui.txt_movimentacao_descricao.clear()
         self.itens_movimentacao.clear()
         self.ui.box_movimentacao_itens_item.setCurrentIndex(0)

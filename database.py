@@ -124,6 +124,7 @@ class DbConect:
                                 c.motivo,
                                 c.data_solicitacao,
                                 c.n_danfe,
+                                c.chave_acesso,
                                 c.validacao,
                                 c.data_validacao,
                                 c.valor_total,
@@ -359,6 +360,18 @@ class DbConect:
             self.conexao.commit()
         finally:
             cursor.close()  
+    
+    def adicionar_ao_estoque(self, info):
+        cursor = self.conexao.cursor(pymysql.cursors.DictCursor)
+        
+        try:
+            cursor.execute("INSERT INTO estoque(id_item, quantidade_atual, quantidade_minima, add_by) VALUES (%s, %s, %s, %s)", info)
+            self.conexao.commit()
+        except Exception:
+            self.conexao.rollback()
+            raise
+        finally:
+            cursor.close()
     
     def registrar_movimentacao(self, info):
         cursor = self.conexao.cursor(pymysql.cursors.DictCursor)
@@ -780,6 +793,33 @@ class DbConect:
         try:
             cursor.execute("SELECT nome FROM itens WHERE nome = %s", (nome,))
             return cursor.fetchone()
+        finally:
+            cursor.close()
+    
+    def verificar_estoque(self, id_item):
+        cursor = self.conexao.cursor(pymysql.cursors.DictCursor)
+        
+        try:
+            cursor.execute("SELECT * FROM estoque WHERE id_item = %s", (id_item))
+            return cursor.fetchone()
+        finally:
+            cursor.close()
+    
+    def verificar_itens_criticos(self):
+        cursor = self.conexao.cursor(pymysql.cursors.DictCursor)
+        
+        try:
+            cursor.execute("""
+                            SELECT
+                                e.id_item,
+                                i.nome,
+                                e.quantidade_atual,
+                                e.quantidade_minima,
+                                i.ultimo_preco
+                            FROM estoque e
+                            LEFT JOIN itens i ON i.id_item = e.id_item
+                            WHERE quantidade_atual < quantidade_minima""")
+            return cursor.fetchall()
         finally:
             cursor.close()
     

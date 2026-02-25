@@ -97,6 +97,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btn_edit_itens_salvar.clicked.connect(self.estoque.editar_item)
         self.ui.btn_edit_itens_limpar.clicked.connect(self.estoque.limpar_campos_edit)
         self.ui.btn_estoque_compras.clicked.connect(self.estoque.carregar_tab_compras)
+        self.ui.btn_add_estoque_add.clicked.connect(self.estoque.adicionar_ao_estoque)
+        self.ui.btn_add_estoque_limpar.clicked.connect(self.estoque.limpar_campos_add_estoque)
 
 #======================COMPRAS======================#
 
@@ -111,6 +113,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui.btn_compras_set_analise.clicked.connect(self.estoque.set_compra_analise)
         self.ui.btn_compras_set_cancelada.clicked.connect(self.estoque.set_compra_cancelada)
         self.ui.btn_compras_cadastro_vinc_nf.clicked.connect(self.estoque.vincular_nf)
+        self.ui.btn_compras_itens_remover.clicked.connect(self.estoque.remover_item_lista_compra)
+        self.ui.btn_compras_nova_compra.clicked.connect(self.estoque.toggle_compras)
+        self.ui.btn_compras_itens_incluir_criticos.clicked.connect(self.estoque.incluir_itens_criticos)
 
 #======================EDITAR ESTOQUE======================#
 
@@ -256,6 +261,7 @@ class Login(QtWidgets.QWidget):
 if __name__ == "__main__":
     import sys
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyleSheet("QMessageBox QLabel {color: white !important;font-size: 12px;font-weight: bold;}")
     window = Login()
     window.show()
     app.exec_()
